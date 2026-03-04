@@ -36,7 +36,10 @@ def play_audio_file(filepath, volume=0.7):
     播放音频文件。
     支持 .wav / .mp3（pygame 可用时）或仅 .wav（winsound 降级）。
     """
-    if not filepath or not os.path.exists(filepath):
+    if not filepath:
+        return
+    if not os.path.exists(filepath):
+        print(f"[Audio] 文件不存在，跳过播放: {filepath}")
         return
 
     if _USE_PYGAME:
@@ -244,6 +247,7 @@ class AlertManager(QObject):
     def _check_cloak(self, text, char_name, filepath):
         """检测隐身解除（无冷却、无弹窗，仅播放音频）"""
         if '你的隐形状态已解除' in text or 'Your cloak deactivates due to proximity' in text:
+            print(f"[Alert] 隐身解除检测命中: {text[:80]}")
             self._play('audio_cloak')
             return True
         return False

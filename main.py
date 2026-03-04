@@ -442,12 +442,27 @@ class MainWindow(QMainWindow):
 # 入口
 # ============================================================
 def main():
+    # Windows 任务栏图标：设置 AppUserModelID，使任务栏显示自定义图标
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('EVE.LMA.Monitor.1')
+    except Exception:
+        pass
+
     # 高 DPI 支持
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # 跨平台一致风格
+
+    # 设置应用级图标
+    base = get_base_path()
+    icon_path = os.path.join(base, "LMA.ico")
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(base, "LMA.png")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     window = MainWindow()
     window.show()
