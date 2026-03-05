@@ -11,6 +11,7 @@ EVE-LMA v3.0 主窗口
 import ctypes
 import os
 import sys
+from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QColor
@@ -430,15 +431,10 @@ class MainWindow(QMainWindow):
         if checked and char_name not in checked:
             return
 
-        # 隐私模式
+        # 隐私模式：不显示日志内容，仅静默时刷新
         if self.config.get('privacy_mode', False):
-            if self.log_output.toPlainText() != "🔒 监控已开启 — 隐私模式":
-                self.log_output.clear()
-                self.log_output.setAlignment(Qt.AlignCenter)
-                self.log_output.append(
-                    '<div style="text-align:center;color:#ff6a5e;font-size:18px;'
-                    'margin-top:40px;">🔒 监控已开启 — 隐私模式</div>'
-                )
+            # 不做任何输出，保持当前屏幕不变
+            pass
         else:
             # 正常输出
             display_html = parse_log_line(raw_line)
@@ -451,6 +447,9 @@ class MainWindow(QMainWindow):
 
     def _on_silence(self):
         """全局静默回调"""
+        # 隐私模式下刷新角色监控状态
+        if self.config.get('privacy_mode', False):
+            self._refresh_privacy_display()
         self.alert_mgr.check_silence()
 
     def _on_alert(self, alert_type, char_name, message):
@@ -474,14 +473,30 @@ class MainWindow(QMainWindow):
         self.config.set('privacy_mode', checked)
         self._save_timer.start()
         if checked:
-            self.log_output.clear()
-            self.log_output.append(
-                '<div style="text-align:center;color:#ff6a5e;font-size:18px;'
-                'margin-top:40px;">🔒 监控已开启 — 隐私模式</div>'
-            )
+            self._refresh_privacy_display()
         else:
             self.log_output.clear()
             self.log_output.append('<span style="color:#4a5068;">隐私模式已关闭，恢复日志输出</span>')
+
+    def _refresh_privacy_display(self):
+        """刷新隐私模式显示：一次性显示所有已勾选角色的监控状态"""
+        self.log_output.clear()
+        ts = datetime.now().strftime('%H:%M:%S')
+        self.log_output.append(
+            '<span style="color:#ff6a5e;font-size:14px;">'
+            '🔒 隐私模式已开启 — 日志内容已隐藏</span>'
+        )
+        checked_names = [n for n, cb in self._char_checks.items() if cb.isChecked()]
+        if checked_names:
+            for name in checked_names:
+                self.log_output.append(
+                    f'<span style="color:#1a3a38;">[{ts}]</span> '
+                    f'<span style="color:#00ccaa;">角色【{name}】监控已开启...</span>'
+                )
+        else:
+            self.log_output.append(
+                '<span style="color:#4a5068;">暂无已勾选角色</span>'
+            )
 
     # ================================================================
     #  关闭

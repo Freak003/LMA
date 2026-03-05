@@ -105,14 +105,17 @@ def play_audio_file(filepath, force_stop=False):
     return False
 
 
+# PVP 玩家攻击纯文本模式:
+# “来自 Freak 03[AMIYA](救世级) - 武器 - 结果”
+# “对 Freak 03[AMIYA](救世级) - 武器 - 结果”
+# “from Attacker[CORP](Ship) - weapon - result”
+# “to Target[CORP](Ship) - weapon - result”
 _PVP_PATTERN = re.compile(
-    r'<b><font[^>]*>'      # 加粗 + 颜色开头
-    r'([^<]+?)'             # 攻击者名字
-    r'</font></b>'
-    r'[^[]*'               # 中间可能有其他文本
-    r'\[([^\]]*)\]'         # [军团/联盟标签]
+    r'(?:来自|对|from|to)\s+'
+    r'(.+?)'                # 攻击者/目标名字
+    r'\[([^\]]+)\]'         # [军团标签]
     r'\s*\(([^)]+)\)',      # (船型)
-    re.DOTALL
+    re.IGNORECASE
 )
 
 # 无畏检测关键词（独立于 BossConfig）
@@ -205,10 +208,10 @@ class AlertManager(QObject):
     def _check_pvp(self, raw_line, text, char_name):
         """
         PVP / 玩家交战检测:
-        格式: 攻击者名[军团](船型)
+        纯文本格式: 来自/对 玩家名[军团](船型) - 武器 - 结果
         冷却: 10 分钟间隔重置（每次命中刷新 CD）
         """
-        match = _PVP_PATTERN.search(raw_line)
+        match = _PVP_PATTERN.search(text)
         if not match:
             return False
 
