@@ -109,6 +109,16 @@ class LogFile:
                 self.last_activity = time.time()
         except Exception as e:
             print(f"[LogFile] 读取失败 {self.filepath}: {e}")
+            # 尝试重新打开文件
+            try:
+                self.file_handle.close()
+                self.encoding = _detect_encoding(self.filepath)
+                self.file_handle = open(self.filepath, 'r',
+                                         encoding=self.encoding,
+                                         errors='replace')
+                self.file_handle.seek(self.last_pos)
+            except Exception:
+                pass
 
         return lines
 
@@ -173,6 +183,8 @@ class LogMonitor(QObject):
         self.scan_timer.stop()
         self.read_timer.stop()
         self.silence_timer.stop()
+        
+        # 关闭所有日志文件
         for lf in self.log_files.values():
             lf.close()
         self.log_files.clear()
@@ -217,6 +229,7 @@ class LogMonitor(QObject):
 
         changed = False
 
+        # 添加新发现的文件
         for fpath in newly_discovered:
             if fpath not in self.log_files:
                 lf = LogFile(fpath)
@@ -224,7 +237,11 @@ class LogMonitor(QObject):
                     self.log_files[fpath] = lf
                     changed = True
                     print(f"[Monitor] 发现新日志: {lf.char_name} -> {fpath}")
+                else:
+                    # 如果无法打开文件，则跳过
+                    continue
 
+        # 清理已删除的文件
         to_remove = []
         for fpath in self.log_files:
             if not os.path.exists(fpath):
@@ -240,17 +257,21 @@ class LogMonitor(QObject):
     def _read_all(self):
         """读取所有监控文件的新行"""
         for fpath, lf in list(self.log_files.items()):
-            lines = lf.read_new_lines()
-            for line in lines:
-                ts_beijing = self._extract_beijing_time(line)
-                self.new_line.emit(lf.char_name, ts_beijing, line, fpath)
+            try:
+                lines = lf.read_new_lines()
+                for line in lines:
+                    ts_beijing = self._extract_beijing_time(line)
+                    self.new_line.emit(lf.char_name, ts_beijing, line, fpath)
 
-                # 冷启动保护：首行日志到达后开启静默计时
-                if not self.has_received_first_line:
-                    if not self.checked_chars or lf.char_name in self.checked_chars:
-                        self.has_received_first_line = True
+                    # 冷启动保护：首行日志到达后开启静默计时
+                    if not self.has_received_first_line:
+                        if not self.checked_chars or lf.char_name in self.checked_chars:
+                            self.has_received_first_line = True
 
-                self.silence_triggered = False
+                if lines:
+                    self.silence_triggered = False
+            except Exception as e:
+                print(f"[Monitor] 读取文件出错 {fpath}: {e}")
 
     def _extract_beijing_time(self, line):
         """从日志行中提取 UTC 时间并转为北京时间 (UTC+8)"""
@@ -276,11 +297,19 @@ class LogMonitor(QObject):
             return
 
         now = time.time()
-        all_quiet = all(
-            (now - lf.last_activity) > self.silence_threshold
-            for lf in self.log_files.values()
-        )
-
-        if all_quiet and not self.silence_triggered:
+        
+        # 检查所有勾选的角色是否都静默了
+        active_checked_chars = []
+        for lf in self.log_files.values():
+            if not self.checked_chars or lf.char_name in self.checked_chars:
+                time_since_activity = now - lf.last_activity
+                if time_since_activity <= self.silence_threshold:
+                    # 至少有一个勾选的角色还在活动
+                    return
+                else:
+                    active_checked_chars.append(lf.char_name)
+        
+        # 如果所有勾选的角色都超过了静默阈值，且还没有触发过静默
+        if active_checked_chars and not self.silence_triggered:
             self.silence_triggered = True
             self.all_silent.emit()

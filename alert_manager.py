@@ -21,7 +21,7 @@ from log_parser import extract_plain_text, is_combat_line, is_notify_line
 
 # ── 预初始化音频系统 ──
 try:
-    pygame.mixer.init()
+    pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
     _AUDIO_AVAILABLE = True
 except:
     _AUDIO_AVAILABLE = False
@@ -130,7 +130,7 @@ def play_audio_file(filepath, force_stop=False):
 # “to Target[CORP](Ship) - weapon - result”
 _PVP_PATTERN = re.compile(
     r'(?:来自|对|from|to)\s+'
-    r'(.+?)'                # 攻击者/目标名字
+    r'([^\[]+?)'              # 攻击者/目标名字 (非贪婪匹配)
     r'\[([^\]]+)\]'         # [军团标签]
     r'\s*\(([^)]+)\)',      # (船型)
     re.IGNORECASE
@@ -187,6 +187,8 @@ class AlertManager(QObject):
             'pvp': 600,
         }
 
+
+
     # ---------- 公共入口 ----------
 
     def check_line(self, char_name, raw_line):
@@ -196,6 +198,8 @@ class AlertManager(QObject):
         命中即返回（PVP 具有最高优先级并抢占音频）。
         """
         text = extract_plain_text(raw_line)
+
+        # PVP 活跃跟踪已不需要（CD 刷新时直接延长宽限期）
 
         # ── PVP 检测 ──
         if self._is_enabled('pvp') and is_combat_line(raw_line):
@@ -246,7 +250,12 @@ class AlertManager(QObject):
         ship = match.group(3).strip()
 
         # 排除 NPC（军团标签为空或匹配 NPC 模式）
-        if not corp:
+        if not corp or not attacker:
+            return False
+
+        # 排除一些明显的 NPC 标签
+        npc_corps = ['Guristas', 'Sansha', 'Serpentis', 'Blood', 'Angel', 'ORE']
+        if corp in npc_corps or any(npc in corp for npc in ['Guristas', 'Sansha', 'Serpentis', 'Blood', 'Angel', 'ORE']):
             return False
 
         # 间隔重置 CD：每次命中都刷新计时
@@ -255,6 +264,8 @@ class AlertManager(QObject):
         if elapsed < self._cd_durations['pvp']:
             # 刷新 CD 时间但不重复报警
             self._cooldowns['pvp'] = now
+            # 持续战斗中也延长静默宽限期
+            self._last_alert_time = now
             return False
 
         self._cooldowns['pvp'] = now
@@ -307,8 +318,10 @@ class AlertManager(QObject):
     def _check_cloak(self, text, char_name):
         """隐身解除检测"""
         cloak_phrases = [
+            "你的隐形状态已解除", "your cloak deactivates due to proximity",
             "你的隐形已被解除", "your cloak has been deactivated",
             "隐形已解除", "cloak deactivated",
+            "隐形状态已解除", "cloak deactivates",
         ]
         for phrase in cloak_phrases:
             if phrase.lower() in text.lower():

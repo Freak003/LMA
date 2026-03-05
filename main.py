@@ -349,6 +349,7 @@ class MainWindow(QMainWindow):
         if folder:
             self.path_edit.setText(folder)
             self.config.set('log_path', folder)
+            self._save_timer.start()
             self.monitor.set_path(folder)
             self.log_output.clear()
             self._reset_char_list()
@@ -370,6 +371,7 @@ class MainWindow(QMainWindow):
                 pass
             edit_widget.setText(fpath)
             self.config.set(key, fpath)
+            self._save_timer.start()
 
     # ================================================================
     #  角色复选框

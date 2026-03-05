@@ -46,18 +46,15 @@ def parse_log_line(raw):
 
     html = raw
 
-    # <font size=..> 和 </font>
-    html = re.sub(r'<font\s+size=\d+>', '', html)
-    html = html.replace('</font>', '')
-
-    # <font color="0x..."> → <span style="color:...">
+    # <font color="0x..."> → <span style="color:...">，</font> → </span>
     def _replace_font_color(m):
         color = parse_eve_color(m.group(1))
         return f'<span style="color:{color}">'
     html = re.sub(r'<font\s+color="([^"]*)">', _replace_font_color, html)
-
-    # 把没被替换掉的 </font> 转 </span>
     html = html.replace('</font>', '</span>')
+
+    # <font size=..> 单独移除（无对应闭合标签需要保留）
+    html = re.sub(r'<font\s+size=\d+>', '', html)
 
     # <b>, </b> 保留
     # <a href=...> 保留
