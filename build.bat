@@ -13,9 +13,9 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM 安装依赖
-echo [1/4] 正在安装依赖...
-pip install -r requirements.txt
+REM 检查依赖是否已安装（跳过已满足的情况）
+echo [1/4] 检查依赖...
+pip install -r requirements.txt --quiet --disable-pip-version-check 2>nul
 if %errorlevel% neq 0 (
     echo [错误] 依赖安装失败。
     pause
