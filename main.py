@@ -13,7 +13,7 @@ import os
 import sys
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QColor
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog,
@@ -26,62 +26,159 @@ from log_parser import parse_log_line, extract_plain_text
 from alert_manager import AlertManager, AlertDialog
 
 
-# ── 暗色主题 ──
+# ── 深空黑暗主题 ──
 DARK_STYLE = """
-QMainWindow, QWidget {
-    background-color: #1e1e2e;
-    color: #cdd6f4;
+/* ═══ EVE-LMA Deep Space Theme ═══ */
+* { outline: none; }
+
+QMainWindow {
+    background-color: #080810;
+}
+
+QWidget {
+    background-color: #080810;
+    color: #a0a8b8;
     font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
     font-size: 13px;
 }
+
+/* ── GroupBox ── */
 QGroupBox {
-    border: 1px solid #45475a;
-    border-radius: 6px;
-    margin-top: 10px;
-    padding-top: 14px;
+    border: 1px solid #1a2a38;
+    border-radius: 5px;
+    margin-top: 12px;
+    padding: 18px 8px 8px 8px;
     font-weight: bold;
-    color: #cba6f7;
+    color: #00ccaa;
+    background-color: #0a0a14;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 12px;
-    padding: 0 6px;
+    padding: 2px 10px;
+    background-color: #0a0a14;
+    border: 1px solid #1a2a38;
+    border-radius: 3px;
 }
+
+/* ── Label ── */
+QLabel {
+    background: transparent;
+    color: #8890a0;
+}
+
+/* ── LineEdit ── */
 QLineEdit {
-    background-color: #313244;
-    border: 1px solid #45475a;
-    border-radius: 4px;
-    padding: 4px 8px;
-    color: #cdd6f4;
+    background-color: #0c0c18;
+    border: 1px solid #1a2a38;
+    border-radius: 3px;
+    padding: 5px 10px;
+    color: #c0c8d8;
+    selection-background-color: #1a4060;
 }
+QLineEdit:focus {
+    border-color: #00ccaa;
+}
+
+/* ── Button ── */
 QPushButton {
-    background-color: #45475a;
-    border: 1px solid #585b70;
-    border-radius: 4px;
-    padding: 5px 14px;
-    color: #cdd6f4;
+    background-color: #10101c;
+    border: 1px solid #1a2a38;
+    border-radius: 3px;
+    padding: 6px 18px;
+    color: #a0a8b8;
+    font-weight: bold;
 }
-QPushButton:hover { background-color: #585b70; }
-QPushButton:pressed { background-color: #6c7086; }
+QPushButton:hover {
+    background-color: #181830;
+    border-color: #00ccaa;
+    color: #e0e8f0;
+}
+QPushButton:pressed {
+    background-color: #0a2a28;
+    border-color: #00aa88;
+}
+
+/* ── TextEdit (日志区) ── */
 QTextEdit {
-    background-color: #181825;
-    border: 1px solid #45475a;
-    border-radius: 4px;
-    color: #a6adc8;
+    background-color: #04040a;
+    border: 1px solid #12121e;
+    border-radius: 3px;
+    padding: 4px;
+    color: #7880a0;
     font-family: Consolas, "Courier New", monospace;
     font-size: 12px;
+    selection-background-color: #1a4060;
 }
-QCheckBox { spacing: 6px; color: #cdd6f4; }
+
+/* ══ CheckBox 核心样式 ══ */
+QCheckBox {
+    spacing: 10px;
+    color: #7078a0;
+    padding: 4px 2px;
+}
+QCheckBox:hover {
+    color: #d0d8e8;
+}
 QCheckBox::indicator {
-    width: 16px; height: 16px;
-    border: 1px solid #585b70;
-    border-radius: 3px;
-    background: #313244;
+    width: 22px;
+    height: 22px;
+    border: 2px solid #2a2a44;
+    border-radius: 5px;
+    background-color: #0a0a16;
+}
+QCheckBox::indicator:hover {
+    border-color: #00ccaa;
+    background-color: #0c1a1a;
 }
 QCheckBox::indicator:checked {
-    background: #cba6f7;
-    border-color: #cba6f7;
+    background-color: #00ccaa;
+    border-color: #00ccaa;
 }
+QCheckBox::indicator:checked:hover {
+    background-color: #00ddbb;
+    border-color: #00ddbb;
+}
+
+/* ── ScrollBar ── */
+QScrollBar:vertical {
+    background: #080810;
+    width: 8px;
+    border: none;
+}
+QScrollBar::handle:vertical {
+    background: #1c2836;
+    border-radius: 4px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #2a3a50;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+QScrollBar:horizontal {
+    background: #080810;
+    height: 8px;
+    border: none;
+}
+QScrollBar::handle:horizontal {
+    background: #1c2836;
+    border-radius: 4px;
+    min-width: 30px;
+}
+
+/* ── StatusBar ── */
+QStatusBar {
+    background-color: #04040a;
+    color: #4a5068;
+    border-top: 1px solid #12121e;
+    font-size: 12px;
+}
+QStatusBar QLabel {
+    color: #4a5068;
+    background: transparent;
+}
+
 QScrollArea { border: none; background: transparent; }
 """
 
@@ -106,6 +203,12 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+
+        # 500ms 防抖保存定时器
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(500)
+        self._save_timer.timeout.connect(self.config.save_settings)
 
         # 加载已有路径自动开始
         if self.config.get('log_path'):
@@ -170,8 +273,11 @@ class MainWindow(QMainWindow):
         toggle_grid.addWidget(self.chk_silence, 1, 0)
         toggle_grid.addWidget(self.chk_pvp, 1, 1)
 
-        # 隐私模式用醒目颜色
-        self.chk_privacy.setStyleSheet("color: #f38ba8; font-weight: bold;")
+        # 隐私模式用警告色
+        self.chk_privacy.setStyleSheet(
+            "QCheckBox { color: #ff6a5e; font-weight: bold; }"
+            "QCheckBox:hover { color: #ff8a7e; }"
+        )
         toggle_grid.addWidget(self.chk_privacy, 1, 2)
 
         toggle_group.setLayout(toggle_grid)
@@ -330,14 +436,14 @@ class MainWindow(QMainWindow):
                 self.log_output.clear()
                 self.log_output.setAlignment(Qt.AlignCenter)
                 self.log_output.append(
-                    '<div style="text-align:center;color:#f38ba8;font-size:18px;'
+                    '<div style="text-align:center;color:#ff6a5e;font-size:18px;'
                     'margin-top:40px;">🔒 监控已开启 — 隐私模式</div>'
                 )
         else:
             # 正常输出
             display_html = parse_log_line(raw_line)
-            prefix = f'<span style="color:#89b4fa;">[{ts_beijing}]</span> ' if ts_beijing else ''
-            char_tag = f'<span style="color:#a6e3a1;">[{char_name}]</span> '
+            prefix = f'<span style="color:#00ccaa;">[{ts_beijing}]</span> ' if ts_beijing else ''
+            char_tag = f'<span style="color:#5a9aff;">[{char_name}]</span> '
             self.log_output.append(f"{prefix}{char_tag}{display_html}")
 
         # 运行警报检测
@@ -360,28 +466,33 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _save_toggle(self, key, value):
+        """UI 立即响应 → 内存更新 → 防抖延迟写盘"""
         self.config.set(key, value)
+        self._save_timer.start()  # (re)start 500ms debounce
 
     def _on_privacy_toggled(self, checked):
         self.config.set('privacy_mode', checked)
+        self._save_timer.start()
         if checked:
             self.log_output.clear()
             self.log_output.append(
-                '<div style="text-align:center;color:#f38ba8;font-size:18px;'
+                '<div style="text-align:center;color:#ff6a5e;font-size:18px;'
                 'margin-top:40px;">🔒 监控已开启 — 隐私模式</div>'
             )
         else:
             self.log_output.clear()
-            self.log_output.append('<span style="color:#6c7086;">隐私模式已关闭，恢复日志输出</span>')
+            self.log_output.append('<span style="color:#4a5068;">隐私模式已关闭，恢复日志输出</span>')
 
     # ================================================================
     #  关闭
     # ================================================================
 
     def closeEvent(self, event):
-        # 保存音频路径
+        # 停止防抖定时器，立即 flush
+        self._save_timer.stop()
         for key, edit in self.audio_edits.items():
             self.config.set(key, edit.text())
+        self.config.save_settings()   # 同步写盘
         self.monitor.stop()
         event.accept()
 

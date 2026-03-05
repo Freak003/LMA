@@ -7,6 +7,8 @@ import json
 import os
 import sys
 
+from PyQt5.QtCore import QMutex
+
 
 DEFAULT_SETTINGS = {
     "log_path": "",
@@ -43,6 +45,7 @@ class ConfigManager:
         self.base_dir = get_base_path()
         self._settings_path = os.path.join(self.base_dir, 'Settings.json')
         self._boss_config_path = os.path.join(self.base_dir, 'BossConfig.txt')
+        self._mutex = QMutex()
         self.settings = dict(DEFAULT_SETTINGS)
         self.boss_prefixes = []
         self.load()
@@ -66,9 +69,15 @@ class ConfigManager:
         self.save_settings()
 
     def save_settings(self):
+        """线程安全地将设置写入磁盘（先加锁拷贝，再写文件）"""
+        self._mutex.lock()
+        try:
+            snapshot = dict(self.settings)
+        finally:
+            self._mutex.unlock()
         try:
             with open(self._settings_path, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, indent=4, ensure_ascii=False)
+                json.dump(snapshot, f, indent=4, ensure_ascii=False)
         except Exception as e:
             print(f"[Config] Settings.json 保存失败: {e}")
 
@@ -97,15 +106,28 @@ class ConfigManager:
     # ---------- 快捷访问 ----------
 
     def get(self, key, default=None):
-        return self.settings.get(key, default)
+        """线程安全读取内存中的设置值"""
+        self._mutex.lock()
+        try:
+            return self.settings.get(key, default)
+        finally:
+            self._mutex.unlock()
 
     def set(self, key, value):
-        self.settings[key] = value
-        self.save_settings()
+        """仅更新内存（线程安全）。磁盘持久化由调用方 debounce 控制。"""
+        self._mutex.lock()
+        try:
+            self.settings[key] = value
+        finally:
+            self._mutex.unlock()
 
     def resolve_audio(self, key):
-        """将相对音频路径解析为绝对路径"""
-        rel = self.settings.get(key, "")
+        """将相对音频路径解析为绝对路径（线程安全）"""
+        self._mutex.lock()
+        try:
+            rel = self.settings.get(key, "")
+        finally:
+            self._mutex.unlock()
         if not rel:
             return ""
         if os.path.isabs(rel):

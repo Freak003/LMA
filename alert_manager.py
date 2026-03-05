@@ -292,9 +292,9 @@ class AlertManager(QObject):
     # ---------- 内部工具 ----------
 
     def _is_enabled(self, alert_type):
-        """检查该类型警报是否开启"""
+        """检查该类型警报是否开启（通过 mutex 安全读取）"""
         key = f'alert_{alert_type}_enabled'
-        return self.config.settings.get(key, True)
+        return self.config.get(key, True)
 
     def _check_cd(self, alert_type):
         """检查固定冷却。通过返回 True，否则返回 False。"""
