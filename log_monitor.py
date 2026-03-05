@@ -154,7 +154,7 @@ class LogMonitor(QObject):
         self.log_files = {}           # filepath -> LogFile
         self.silence_triggered = False
         self.silence_threshold = 30   # 静默阈值（秒）
-        self.file_time_window = 60    # 文件发现时间窗口（秒）
+        self.file_time_window = 100  # 文件发现时间窗口（24小时）
         self.has_received_first_line = False  # 冷启动保护
 
         # 已勾选角色（由 GUI 设置）

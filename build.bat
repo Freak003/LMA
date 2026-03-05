@@ -37,6 +37,7 @@ pyinstaller ^
     --windowed ^
     --name "EVE-LMA" ^
     --add-data "BossConfig.txt;." ^
+    --add-data "LMA.png;." ^
     --hidden-import "pygame" ^
     --icon "LMA.ico" ^
     main.py
@@ -52,6 +53,7 @@ echo [4/4] 复制项目资源到输出目录...
 REM 复制配置文件和图标
 copy /Y BossConfig.txt dist\EVE-LMA\ >nul 2>&1
 copy /Y LMA.ico dist\EVE-LMA\ >nul 2>&1
+copy /Y LMA.png dist\EVE-LMA\ >nul 2>&1
 
 REM 复制默认音频文件到 audio 子目录
 if exist "audio" (

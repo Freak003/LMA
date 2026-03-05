@@ -10,6 +10,18 @@ import sys
 from PyQt5.QtCore import QMutex
 
 
+def _detect_eve_log_path():
+    """自动检测 EVE 默认日志目录"""
+    candidates = [
+        os.path.join(os.path.expanduser('~'), 'Documents', 'EVE', 'logs', 'Gamelogs'),
+        os.path.join(os.path.expanduser('~'), '文档', 'EVE', 'logs', 'Gamelogs'),
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return ""
+
+
 DEFAULT_SETTINGS = {
     "log_path": "",
     "audio_boss": "audio/恭喜发财.mp3",
@@ -68,6 +80,10 @@ class ConfigManager:
                 print(f"[Config] Settings.json 读取失败: {e}")
         # 只有在首次运行且配置文件不存在时才保存默认设置
         if not os.path.exists(self._settings_path):
+            # 首次运行：自动检测 EVE 日志路径
+            detected = _detect_eve_log_path()
+            if detected:
+                self.settings['log_path'] = detected
             self.save_settings()
 
     def save_settings(self):

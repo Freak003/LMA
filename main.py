@@ -191,7 +191,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(820, 680)
 
         # 设置图标
-        icon_path = os.path.join(get_base_path(), 'LMA.ico')
+        icon_path = os.path.join(get_base_path(), 'LMA.png')
         if os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -215,6 +215,7 @@ class MainWindow(QMainWindow):
         if self.config.get('log_path'):
             self.path_edit.setText(self.config.get('log_path'))
             self.monitor.start()
+            self.statusBar().showMessage(f"监控中: {self.config.get('log_path')}")
 
     # ================================================================
     #  UI 构建
@@ -350,9 +351,9 @@ class MainWindow(QMainWindow):
             self.path_edit.setText(folder)
             self.config.set('log_path', folder)
             self._save_timer.start()
-            self.monitor.set_path(folder)
             self.log_output.clear()
             self._reset_char_list()
+            self.monitor.set_path(folder)
             self.statusBar().showMessage(f"监控中: {folder}")
 
     def _choose_audio(self, key, edit_widget):
@@ -391,6 +392,7 @@ class MainWindow(QMainWindow):
         file_list: [(filepath, char_name), ...]
         """
         current_names = set(cn for _, cn in file_list)
+        print(f"[GUI] files_changed: {current_names}")
 
         # 移除已不再活跃的角色
         for name in list(self._char_checks.keys()):
@@ -417,6 +419,21 @@ class MainWindow(QMainWindow):
 
         self._update_checked_chars()
 
+    def _ensure_char_checkbox(self, char_name):
+        """确保角色有对应的复选框（兜底机制）"""
+        if not char_name or char_name == "Unknown":
+            return
+        if char_name in self._char_checks:
+            return
+        cb = QCheckBox(char_name)
+        cb.setChecked(True)
+        cb.toggled.connect(self._update_checked_chars)
+        self._char_checks[char_name] = cb
+        idx = self.char_layout.count() - 1
+        self.char_layout.insertWidget(idx, cb)
+        self.char_placeholder.hide()
+        self._update_checked_chars()
+
     def _update_checked_chars(self, _=None):
         """同步已勾选角色集合到 monitor"""
         checked = {name for name, cb in self._char_checks.items() if cb.isChecked()}
@@ -428,6 +445,9 @@ class MainWindow(QMainWindow):
 
     def _on_new_line(self, char_name, ts_beijing, raw_line, filepath):
         """收到新日志行"""
+        # 兜底：如果该角色还没有复选框，动态创建
+        self._ensure_char_checkbox(char_name)
+
         # 检查角色过滤
         checked = {name for name, cb in self._char_checks.items() if cb.isChecked()}
         if checked and char_name not in checked:
@@ -527,7 +547,8 @@ def main():
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_STYLE)
 
-    icon_path = os.path.join(get_base_path(), 'LMA.ico')
+    # 设置应用程序图标
+    icon_path = os.path.join(get_base_path(), 'LMA.png')
     if os.path.isfile(icon_path):
         app.setWindowIcon(QIcon(icon_path))
 
