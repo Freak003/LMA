@@ -1,282 +1,306 @@
 # -*- coding: utf-8 -*-
 """
-EVE-LMA 预警管理器
-负责 BOSS/无畏/静默 三类预警的检测、冷却、音频播放和弹窗
+EVE-LMA 警报管理器
+v3.0:
+  - PVP 玩家交战检测（最高优先级 + 音频抢占）
+  - 无畏检测排除 "Dread Guristas"
+  - 冷却机制: PVP 10 分钟间隔重置 / 隐身 30 秒 / BOSS & 无畏 10 分钟
+  - 各类警报独立开关
 """
 import os
+import re
 import time
 
-from PyQt5.QtCore import QObject, Qt, pyqtSignal
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (QDesktopWidget, QHBoxLayout, QLabel,
-                              QPushButton, QVBoxLayout, QWidget)
+import pygame
+from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtWidgets import QDialog, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
 
-from log_parser import extract_plain_text
-
-# ============================================================
-# 音频播放（优先 pygame，降级到 winsound）
-# ============================================================
-_USE_PYGAME = False
-try:
-    import pygame
-    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
-    _USE_PYGAME = True
-except Exception:
-    pass
-
-if not _USE_PYGAME:
-    try:
-        import winsound
-    except ImportError:
-        winsound = None
+from log_parser import extract_plain_text, is_combat_line, is_notify_line
 
 
-def play_audio_file(filepath, volume=0.7):
-    """
-    播放音频文件。
-    支持 .wav / .mp3（pygame 可用时）或仅 .wav（winsound 降级）。
-    """
-    if not filepath:
-        return
-    if not os.path.exists(filepath):
-        print(f"[Audio] 文件不存在，跳过播放: {filepath}")
-        return
-
-    if _USE_PYGAME:
-        try:
-            pygame.mixer.music.load(filepath)
-            pygame.mixer.music.set_volume(volume)
-            pygame.mixer.music.play()
-        except Exception as e:
-            print(f"[Audio] pygame 播放失败: {e}")
-    elif winsound and filepath.lower().endswith('.wav'):
-        try:
-            winsound.PlaySound(filepath, winsound.SND_FILENAME | winsound.SND_ASYNC)
-        except Exception as e:
-            print(f"[Audio] winsound 播放失败: {e}")
-    else:
-        print(f"[Audio] 无可用播放器，跳过: {filepath}")
+# ── 颜色常量 ──
+_ALERT_STYLES = {
+    'boss':    {'bg': '#8B0000', 'fg': '#FFD700', 'title': '⚠ BOSS 出现 ⚠'},
+    'dread':   {'bg': '#FF4500', 'fg': '#FFFFFF', 'title': '⚠ 无畏舰出现 ⚠'},
+    'cloak':   {'bg': '#4B0082', 'fg': '#00FFFF', 'title': '⚠ 隐身已解除 ⚠'},
+    'silence': {'bg': '#2F4F4F', 'fg': '#FFFFFF', 'title': '⚠ 全局静默 ⚠'},
+    'pvp':     {'bg': '#DC143C', 'fg': '#FFFFFF', 'title': '🔥 玩家交战 🔥'},
+}
 
 
-# ============================================================
-# 置顶不夺焦警报弹窗
-# ============================================================
-class AlertDialog(QWidget):
-    """
-    置顶但不夺焦的警报确认框。
-    使用 Qt.Tool | Qt.WindowStaysOnTopHint + WA_ShowWithoutActivating
-    实现不抢占焦点的置顶显示。
-    """
-    confirmed = pyqtSignal(str, str)  # filepath, alert_type
+class AlertDialog(QDialog):
+    """彩色弹窗对话框"""
 
-    def __init__(self, message, alert_type="boss", filepath="", parent=None):
+    def __init__(self, alert_type, message, parent=None):
         super().__init__(parent)
-        self.alert_type = alert_type
-        self.filepath = filepath
-
-        # 置顶不夺焦的窗口标志
-        self.setWindowFlags(
-            Qt.WindowStaysOnTopHint |
-            Qt.Tool |
-            Qt.FramelessWindowHint
-        )
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setFixedWidth(380)
-
-        # 样式配色
-        style_map = {
-            'boss':    ('#ff4444', '#2a1a1a', '⚠ BOSS 警报'),
-            'dread':   ('#ff8800', '#2a2210', '⚠ 无畏舰警报'),
-            'silence': ('#44aaff', '#1a1a2a', 'ℹ 静默提醒'),
-        }
-        border_color, bg_color, title_text = style_map.get(
-            alert_type, ('#ffffff', '#2b2b2b', '⚠ 警报')
-        )
-
+        style = _ALERT_STYLES.get(alert_type, _ALERT_STYLES['boss'])
+        self.setWindowTitle(style['title'])
+        self.setMinimumSize(420, 200)
         self.setStyleSheet(f"""
-            AlertDialog {{
-                background-color: {bg_color};
-                border: 2px solid {border_color};
-                border-radius: 10px;
+            QDialog {{
+                background-color: {style['bg']};
+                border: 3px solid {style['fg']};
             }}
             QLabel {{
-                color: #e0e0e0;
-                border: none;
-                padding: 3px;
-            }}
-            QPushButton {{
-                background-color: {border_color};
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 25px;
-                font-size: 13px;
+                color: {style['fg']};
+                font-size: 16px;
                 font-weight: bold;
             }}
+            QPushButton {{
+                background-color: {style['fg']};
+                color: {style['bg']};
+                font-size: 14px;
+                font-weight: bold;
+                border: none;
+                padding: 8px 30px;
+                border-radius: 5px;
+            }}
             QPushButton:hover {{
-                opacity: 0.85;
+                opacity: 0.8;
             }}
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(8)
+        title_lbl = QLabel(style['title'])
+        title_lbl.setStyleSheet("font-size: 22px;")
+        layout.addWidget(title_lbl)
+        layout.addSpacing(10)
 
-        # 标题
-        title = QLabel(title_text)
-        title.setFont(QFont("Microsoft YaHei", 13, QFont.Bold))
-        title.setStyleSheet(f"color: {border_color};")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        msg_lbl = QLabel(message)
+        msg_lbl.setWordWrap(True)
+        layout.addWidget(msg_lbl)
+        layout.addStretch()
 
-        # 消息
-        msg_label = QLabel(message)
-        msg_label.setFont(QFont("Microsoft YaHei", 11))
-        msg_label.setWordWrap(True)
-        msg_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(msg_label)
-
-        # 确认按钮
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        btn = QPushButton("确认")
-        btn.setFont(QFont("Microsoft YaHei", 11))
-        btn.clicked.connect(self._on_confirm)
-        btn.setFixedWidth(100)
-        btn_layout.addWidget(btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
-
-    def _on_confirm(self):
-        self.confirmed.emit(self.filepath, self.alert_type)
-        self.close()
-
-    def show_at_position(self, offset_index=0):
-        """在屏幕右上角显示，支持多个弹窗堆叠"""
-        self.adjustSize()
-        try:
-            desktop = QDesktopWidget()
-            screen = desktop.availableGeometry()
-        except Exception:
-            self.show()
-            return
-        x = screen.width() - self.width() - 25
-        y = 60 + offset_index * (self.height() + 15)
-        self.move(x, y)
-        self.show()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("确认")
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
 
-# ============================================================
-# 预警管理器
-# ============================================================
+# ── 音频播放 ──
+
+def play_audio_file(filepath, force_stop=False):
+    """
+    播放音频文件。
+    force_stop=True 时先停止当前正在播放的音频（PVP 抢占用）。
+    """
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+
+        if force_stop:
+            pygame.mixer.music.stop()
+
+        if filepath and os.path.isfile(filepath):
+            pygame.mixer.music.load(filepath)
+            pygame.mixer.music.play()
+            return True
+        else:
+            print(f"[Audio] 文件不存在: {filepath}")
+    except Exception as e:
+        print(f"[Audio] 播放失败: {e}")
+    return False
+
+
+_PVP_PATTERN = re.compile(
+    r'<b><font[^>]*>'      # 加粗 + 颜色开头
+    r'([^<]+?)'             # 攻击者名字
+    r'</font></b>'
+    r'[^[]*'               # 中间可能有其他文本
+    r'\[([^\]]*)\]'         # [军团/联盟标签]
+    r'\s*\(([^)]+)\)',      # (船型)
+    re.DOTALL
+)
+
+# 无畏检测关键词（独立于 BossConfig）
+_DREAD_KEYWORDS = [
+    "Dreadnought", "无畏舰",
+    "Revelation", "天启级", "启示级",
+    "Phoenix", "凤凰级",
+    "Moros", "莫洛斯级",
+    "Naglfar", "纳迦法级",
+    "Zirnitra", "兹尼特拉级",
+]
+
+
 class AlertManager(QObject):
     """
-    预警管理器：
-    - BOSS 检测（BossConfig.txt 前缀匹配）
-    - 无畏舰检测（Dreadnought / 无畏 关键词）
-    - 静默检测（由 LogMonitor 的 all_silent 信号触发）
-    - 10 分钟冷却（独立计算，确认后重置）
+    警报管理器:
+        check_line()  → 对每行日志执行全部检测
+        check_silence() → 静默警报入口
+
+    冷却说明:
+        BOSS  : 10 分钟 固定 CD
+        无畏  : 10 分钟 固定 CD
+        隐身  : 30 秒 固定 CD
+        PVP   : 10 分钟 间隔重置 CD（每次命中刷新计时）
+        静默  : 无冷却（由 LogMonitor 的 silence_triggered 控制去重）
     """
 
-    # 信号：请求主窗口显示弹窗
-    show_alert = pyqtSignal(str, str, str)  # message, alert_type, filepath
+    alert_triggered = pyqtSignal(str, str, str)  # alert_type, char_name, message
 
-    def __init__(self, config_manager, parent=None):
+    def __init__(self, config, parent=None):
         super().__init__(parent)
-        self.config = config_manager
-        self.cooldowns = {}            # (filepath, alert_type) -> timestamp
-        self.cooldown_duration = 600   # 10 分钟 = 600 秒
-        self._volume = self.config.get('volume', 70) / 100.0
+        self.config = config
 
-    def set_volume(self, volume_percent):
-        """设置音量 (0-100)"""
-        self._volume = max(0.0, min(1.0, volume_percent / 100.0))
+        # 冷却记录 {type: last_trigger_time}
+        self._cooldowns = {
+            'boss': 0,
+            'dread': 0,
+            'cloak': 0,
+            'pvp': 0,
+        }
 
-    def check_line(self, char_name, raw_line, filepath=""):
+        # 冷却时长（秒）
+        self._cd_durations = {
+            'boss': 600,   # 10 min
+            'dread': 600,
+            'cloak': 30,
+            'pvp': 600,
+        }
+
+    # ---------- 公共入口 ----------
+
+    def check_line(self, char_name, raw_line):
         """
-        对每一行新增日志执行关键词扫描。
-        依次检查 BOSS → 无畏，命中后停止。
+        对一行日志依次检测:
+            PVP → BOSS → 无畏 → 隐身解除
+        命中即返回（PVP 具有最高优先级并抢占音频）。
         """
-        plain_text = extract_plain_text(raw_line)
-        if not plain_text:
+        text = extract_plain_text(raw_line)
+
+        # ── PVP 检测 ──
+        if self._is_enabled('pvp') and is_combat_line(raw_line):
+            if self._check_pvp(raw_line, text, char_name):
+                return
+
+        # ── BOSS 检测 ──
+        if self._is_enabled('boss') and is_combat_line(raw_line):
+            if self._check_boss(text, char_name):
+                return
+
+        # ── 无畏舰检测 ──
+        if self._is_enabled('dread') and is_combat_line(raw_line):
+            if self._check_dread(raw_line, text, char_name):
+                return
+
+        # ── 隐身解除 ──
+        if self._is_enabled('cloak') and is_notify_line(raw_line):
+            if self._check_cloak(text, char_name):
+                return
+
+    def check_silence(self):
+        """全局静默警报（无冷却，外部已去重）"""
+        if not self._is_enabled('silence'):
             return
+        audio_path = self.config.resolve_audio('audio_silence')
+        play_audio_file(audio_path)
+        self.alert_triggered.emit('silence', '', '超过 30 秒未检测到新的战斗日志')
 
-        # 1) BOSS 检测
-        if self._check_boss(plain_text, char_name, filepath, raw_line):
-            return
+    # ---------- 各类检测 ----------
 
-        # 2) 无畏舰检测
-        if self._check_dread(plain_text, char_name, filepath):
-            return
-
-        # 3) 隐身解除检测
-        self._check_cloak(plain_text, char_name, filepath)
-
-    # ----- BOSS -----
-    def _check_boss(self, text, char_name, filepath, raw_line):
-        if not self._is_available(filepath, 'boss'):
+    def _check_pvp(self, raw_line, text, char_name):
+        """
+        PVP / 玩家交战检测:
+        格式: 攻击者名[军团](船型)
+        冷却: 10 分钟间隔重置（每次命中刷新 CD）
+        """
+        match = _PVP_PATTERN.search(raw_line)
+        if not match:
             return False
 
-        # 同时在纯文本和原始行（含HTML属性）中搜索
-        search_text = (text + ' ' + raw_line).lower()
+        attacker = match.group(1).strip()
+        corp = match.group(2).strip()
+        ship = match.group(3).strip()
 
+        # 排除 NPC（军团标签为空或匹配 NPC 模式）
+        if not corp:
+            return False
+
+        # 间隔重置 CD：每次命中都刷新计时
+        now = time.time()
+        elapsed = now - self._cooldowns['pvp']
+        if elapsed < self._cd_durations['pvp']:
+            # 刷新 CD 时间但不重复报警
+            self._cooldowns['pvp'] = now
+            return False
+
+        self._cooldowns['pvp'] = now
+
+        audio_path = self.config.resolve_audio('audio_pvp')
+        play_audio_file(audio_path, force_stop=True)  # 抢占
+
+        msg = f"玩家 {attacker} [{corp}]({ship}) 正在攻击！"
+        self.alert_triggered.emit('pvp', char_name, msg)
+        return True
+
+    def _check_boss(self, text, char_name):
+        """BOSS 检测：根据 BossConfig.txt 的前缀匹配"""
         for prefix in self.config.boss_prefixes:
-            if prefix.lower() in search_text:
-                self._set_cooldown(filepath, 'boss')
-                self._play('audio_boss')
-                msg = f"[{char_name}] 发现BOSS，注意拾取LOOT！\n匹配: {prefix}"
-                self.show_alert.emit(msg, 'boss', filepath)
+            if prefix and prefix in text:
+                if not self._check_cd('boss'):
+                    return False
+                audio_path = self.config.resolve_audio('audio_boss')
+                play_audio_file(audio_path)
+                msg = f"BOSS 出现: {text[:80]}"
+                self.alert_triggered.emit('boss', char_name, msg)
                 return True
         return False
 
-    # ----- 无畏舰 -----
-    def _check_dread(self, text, char_name, filepath):
-        if not self._is_available(filepath, 'dread'):
+    def _check_dread(self, raw_line, text, char_name):
+        """
+        无畏舰检测:
+        匹配关键词但排除 "Dread Guristas"（属于 BOSS 检测范畴）。
+        """
+        # 排除 Dread Guristas
+        if re.search(r'Dread\s+Guristas', text, re.IGNORECASE):
+            return False
+        if '恐惧古斯塔斯' in text:
             return False
 
-        text_lower = text.lower()
-        if 'dreadnought' in text_lower or '无畏' in text:
-            self._set_cooldown(filepath, 'dread')
-            self._play('audio_dread')
-            msg = f"[{char_name}] 出现无畏！出现无畏！"
-            self.show_alert.emit(msg, 'dread', filepath)
-            return True
+        for kw in _DREAD_KEYWORDS:
+            if kw.lower() in text.lower():
+                if not self._check_cd('dread'):
+                    return False
+                audio_path = self.config.resolve_audio('audio_dread')
+                play_audio_file(audio_path)
+                msg = f"无畏舰出现: {text[:80]}"
+                self.alert_triggered.emit('dread', char_name, msg)
+                return True
         return False
 
-    # ----- 隐身解除 -----
-    def _check_cloak(self, text, char_name, filepath):
-        """检测隐身解除（无冷却、无弹窗，仅播放音频）"""
-        if '你的隐形状态已解除' in text or 'Your cloak deactivates due to proximity' in text:
-            print(f"[Alert] 隐身解除检测命中: {text[:80]}")
-            self._play('audio_cloak')
-            return True
+    def _check_cloak(self, text, char_name):
+        """隐身解除检测"""
+        cloak_phrases = [
+            "你的隐形已被解除", "your cloak has been deactivated",
+            "隐形已解除", "cloak deactivated",
+        ]
+        for phrase in cloak_phrases:
+            if phrase.lower() in text.lower():
+                if not self._check_cd('cloak'):
+                    return False
+                audio_path = self.config.resolve_audio('audio_cloak')
+                play_audio_file(audio_path)
+                msg = "你的隐身已被解除！"
+                self.alert_triggered.emit('cloak', char_name, msg)
+                return True
         return False
 
-    # ----- 静默 -----
-    def trigger_silence_alert(self):
-        """触发静默警报（由 LogMonitor.all_silent 信号调用）"""
-        self._play('audio_silence')
+    # ---------- 内部工具 ----------
 
-    # ----- 冷却逻辑 -----
-    def _is_available(self, filepath, alert_type):
-        """检查该日志 + 类型组合是否已过冷却"""
-        key = (filepath, alert_type)
-        if key in self.cooldowns:
-            if time.time() - self.cooldowns[key] < self.cooldown_duration:
-                return False
+    def _is_enabled(self, alert_type):
+        """检查该类型警报是否开启"""
+        key = f'alert_{alert_type}_enabled'
+        return self.config.settings.get(key, True)
+
+    def _check_cd(self, alert_type):
+        """检查固定冷却。通过返回 True，否则返回 False。"""
+        now = time.time()
+        elapsed = now - self._cooldowns.get(alert_type, 0)
+        if elapsed < self._cd_durations.get(alert_type, 0):
+            return False
+        self._cooldowns[alert_type] = now
         return True
-
-    def _set_cooldown(self, filepath, alert_type):
-        self.cooldowns[(filepath, alert_type)] = time.time()
-
-    def reset_cooldown(self, filepath, alert_type):
-        """用户确认后重置冷却计时"""
-        key = (filepath, alert_type)
-        self.cooldowns.pop(key, None)
-
-    # ----- 音频 -----
-    def _play(self, config_key):
-        audio_path = self.config.get(config_key, '')
-        if audio_path and not os.path.isabs(audio_path):
-            audio_path = os.path.join(self.config.base_dir, audio_path)
-        play_audio_file(audio_path, self._volume)

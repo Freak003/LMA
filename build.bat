@@ -53,11 +53,12 @@ REM 复制配置文件和图标
 copy /Y BossConfig.txt dist\EVE-LMA\ >nul 2>&1
 copy /Y LMA.ico dist\EVE-LMA\ >nul 2>&1
 
-REM 复制默认音频文件
+REM 复制默认音频文件到 audio 子目录
 if exist "audio" (
-    copy /Y audio\*.mp3 dist\EVE-LMA\ >nul 2>&1
-    copy /Y audio\*.MP3 dist\EVE-LMA\ >nul 2>&1
-    copy /Y audio\*.wav dist\EVE-LMA\ >nul 2>&1
+    if not exist "dist\EVE-LMA\audio" mkdir "dist\EVE-LMA\audio"
+    copy /Y audio\*.mp3 dist\EVE-LMA\audio\ >nul 2>&1
+    copy /Y audio\*.MP3 dist\EVE-LMA\audio\ >nul 2>&1
+    copy /Y audio\*.wav dist\EVE-LMA\audio\ >nul 2>&1
 )
 
 REM 恢复用户自定义配置（如果有备份）

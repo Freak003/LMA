@@ -2,6 +2,7 @@
 """
 EVE-LMA 日志文件监控器
 负责扫描、打开和实时读取 EVE 战斗日志文件
+v3.0: UTF-16 LE 解码修复 + 静默冷启动保护
 """
 import os
 import re
@@ -9,6 +10,23 @@ import time
 from datetime import datetime, timedelta
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+
+
+def _detect_encoding(filepath):
+    """
+    检测 EVE 日志文件编码。
+    EVE 日志文件通常使用 UTF-16 LE (带 BOM: FF FE)。
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            bom = f.read(2)
+            if bom == b'\xff\xfe':
+                return 'utf-16-le'
+            elif bom == b'\xfe\xff':
+                return 'utf-16-be'
+        return 'utf-8'
+    except Exception:
+        return 'utf-8'
 
 
 class LogFile:
@@ -22,11 +40,15 @@ class LogFile:
         self.last_pos = 0
         self.last_activity = time.time()
         self.initialized = False
+        self.encoding = 'utf-8'
 
     def open(self):
         """打开日志文件并解析头部信息"""
         try:
-            self.file_handle = open(self.filepath, 'r', encoding='utf-8', errors='replace')
+            self.encoding = _detect_encoding(self.filepath)
+            self.file_handle = open(self.filepath, 'r',
+                                     encoding=self.encoding,
+                                     errors='replace')
             self._parse_header()
             # 移动到文件末尾，只监控新增内容
             self.file_handle.seek(0, 2)
@@ -40,30 +62,25 @@ class LogFile:
     def _parse_header(self):
         """
         解析日志文件头部，提取角色名和会话开始时间。
-        
-        头部格式示例：
-        ----
-        
-          游戏记录
-          收听者: Nexus Sec
-          进拦开始: 2026.03.04 00:03:46
-        
-        ----
+        自动处理 UTF-16 LE BOM 造成的不可见字符。
         """
         self.file_handle.seek(0)
-        for _ in range(20):  # 只读前 20 行
+        for _ in range(20):
             line = self.file_handle.readline()
             if not line:
                 break
 
-            # 匹配 "收听者:" 或 "Listener:"
-            listener_match = re.search(r'(?:收听者|Listener)\s*:\s*(.+)', line)
+            # 清除 BOM 残余和不可见字符
+            line = line.strip().replace('\ufeff', '').replace('\x00', '')
+
+            # 匹配 "收听者:" 或 "Listener:"（兼容中英文冒号）
+            listener_match = re.search(r'(?:收听者|Listener)\s*[:：]\s*(.+)', line)
             if listener_match:
                 self.char_name = listener_match.group(1).strip()
 
             # 匹配会话开始时间
             time_match = re.search(
-                r'(?:进拦开始|会话开始|Session [Ss]tarted)\s*:\s*'
+                r'(?:进拦开始|会话开始|Session [Ss]tarted)\s*[:：]\s*'
                 r'(\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2})',
                 line
             )
@@ -111,11 +128,10 @@ class LogFile:
 class LogMonitor(QObject):
     """
     日志监控器：周期性扫描目录、读取新行、检测静默
-    
-    信号：
-    - new_line(char_name, timestamp_beijing, raw_line, filepath)
-    - files_changed([(filepath, char_name), ...])
-    - all_silent()  所有日志超过30秒无更新
+
+    v3.0:
+    - 静默冷启动保护：启动后不自动倒计时，仅在检测到已勾选角色的
+      首行新日志后，才开启 30 秒静默检测。
     """
 
     new_line = pyqtSignal(str, str, str, str)   # char_name, ts_beijing, raw_line, filepath
@@ -129,25 +145,28 @@ class LogMonitor(QObject):
         self.silence_triggered = False
         self.silence_threshold = 30   # 静默阈值（秒）
         self.file_time_window = 60    # 文件发现时间窗口（秒）
+        self.has_received_first_line = False  # 冷启动保护
 
-        # 目录扫描定时器
+        # 已勾选角色（由 GUI 设置）
+        self.checked_chars = set()
+
+        # 定时器
         self.scan_timer = QTimer(self)
         self.scan_timer.timeout.connect(self._scan_directory)
 
-        # 行读取定时器
         self.read_timer = QTimer(self)
         self.read_timer.timeout.connect(self._read_all)
 
-        # 静默检测定时器
         self.silence_timer = QTimer(self)
         self.silence_timer.timeout.connect(self._check_silence)
 
     def start(self):
         """启动监控"""
+        self.has_received_first_line = False
         self._scan_directory()
-        self.scan_timer.start(5000)    # 每 5 秒扫描新文件
-        self.read_timer.start(500)     # 每 500ms 读取新行
-        self.silence_timer.start(5000) # 每 5 秒检测静默
+        self.scan_timer.start(5000)
+        self.read_timer.start(500)
+        self.silence_timer.start(5000)
 
     def stop(self):
         """停止监控并释放资源"""
@@ -163,17 +182,19 @@ class LogMonitor(QObject):
         self.stop()
         self.log_path = path
         self.silence_triggered = False
+        self.has_received_first_line = False
         self.start()
+
+    def set_checked_chars(self, char_names):
+        """设置当前已勾选的角色集合"""
+        self.checked_chars = set(char_names)
 
     def get_active_files(self):
         """返回当前监控的文件列表"""
         return [(fp, lf.char_name) for fp, lf in self.log_files.items()]
 
     def _scan_directory(self):
-        """
-        扫描日志目录，发现新的活跃日志文件。
-        筛选条件：.txt 文件 & 最后修改时间在 ±60 秒内
-        """
+        """扫描日志目录，发现新的活跃日志文件"""
         if not self.log_path or not os.path.isdir(self.log_path):
             return
 
@@ -196,7 +217,6 @@ class LogMonitor(QObject):
 
         changed = False
 
-        # 添加新发现的文件
         for fpath in newly_discovered:
             if fpath not in self.log_files:
                 lf = LogFile(fpath)
@@ -205,13 +225,11 @@ class LogMonitor(QObject):
                     changed = True
                     print(f"[Monitor] 发现新日志: {lf.char_name} -> {fpath}")
 
-        # 清理已删除的文件（保留已锁定但暂时不活跃的文件）
         to_remove = []
         for fpath in self.log_files:
             if not os.path.exists(fpath):
                 to_remove.append(fpath)
         for fpath in to_remove:
-            print(f"[Monitor] 文件已删除: {fpath}")
             self.log_files[fpath].close()
             del self.log_files[fpath]
             changed = True
@@ -226,7 +244,12 @@ class LogMonitor(QObject):
             for line in lines:
                 ts_beijing = self._extract_beijing_time(line)
                 self.new_line.emit(lf.char_name, ts_beijing, line, fpath)
-                # 有新行产生，重置静默标记
+
+                # 冷启动保护：首行日志到达后开启静默计时
+                if not self.has_received_first_line:
+                    if not self.checked_chars or lf.char_name in self.checked_chars:
+                        self.has_received_first_line = True
+
                 self.silence_triggered = False
 
     def _extract_beijing_time(self, line):
@@ -243,10 +266,13 @@ class LogMonitor(QObject):
 
     def _check_silence(self):
         """
-        检测全局静默：所有监控文件均超过 30 秒无新内容
-        单次触发：提醒一次后等待，直到产生新行后重置
+        全局静默检测 + 冷启动保护
+        必须已收到过首行新日志才启动检测
         """
         if not self.log_files:
+            return
+
+        if not self.has_received_first_line:
             return
 
         now = time.time()
@@ -258,4 +284,3 @@ class LogMonitor(QObject):
         if all_quiet and not self.silence_triggered:
             self.silence_triggered = True
             self.all_silent.emit()
-            print("[Monitor] 全局静默 >30秒，触发静默警报")
