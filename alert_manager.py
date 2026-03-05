@@ -15,7 +15,17 @@ import pygame
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
 
+from config_manager import get_base_path
 from log_parser import extract_plain_text, is_combat_line, is_notify_line
+
+
+# ── 预初始化音频系统 ──
+try:
+    pygame.mixer.init()
+    _AUDIO_AVAILABLE = True
+except:
+    _AUDIO_AVAILABLE = False
+    print("[Audio] 初始化失败")
 
 
 # ── 颜色常量 ──
@@ -87,9 +97,10 @@ def play_audio_file(filepath, force_stop=False):
     播放音频文件。
     force_stop=True 时先停止当前正在播放的音频（PVP 抢占用）。
     """
+    global _AUDIO_AVAILABLE
     try:
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
+        if not _AUDIO_AVAILABLE:
+            return False
 
         if force_stop:
             pygame.mixer.music.stop()
@@ -102,6 +113,13 @@ def play_audio_file(filepath, force_stop=False):
             print(f"[Audio] 文件不存在: {filepath}")
     except Exception as e:
         print(f"[Audio] 播放失败: {e}")
+        # 尝试重新初始化音频系统
+        try:
+            pygame.mixer.quit()
+            pygame.mixer.init()
+            _AUDIO_AVAILABLE = True
+        except:
+            _AUDIO_AVAILABLE = False
     return False
 
 
@@ -157,6 +175,10 @@ class AlertManager(QObject):
             'pvp': 0,
         }
 
+        # 上次任意警报触发时间（用于静默宽限期）
+        self._last_alert_time = 0
+        self._silence_grace_period = 120  # 警报后 120 秒内不触发静默
+
         # 冷却时长（秒）
         self._cd_durations = {
             'boss': 600,   # 10 min
@@ -199,6 +221,10 @@ class AlertManager(QObject):
         """全局静默警报（无冷却，外部已去重）"""
         if not self._is_enabled('silence'):
             return
+
+        # 宽限期检查：最近警报后 120 秒内不触发静默
+        if time.time() - self._last_alert_time < self._silence_grace_period:
+            return
         audio_path = self.config.resolve_audio('audio_silence')
         play_audio_file(audio_path)
         self.alert_triggered.emit('silence', '', '超过 30 秒未检测到新的战斗日志')
@@ -232,6 +258,7 @@ class AlertManager(QObject):
             return False
 
         self._cooldowns['pvp'] = now
+        self._last_alert_time = now
 
         audio_path = self.config.resolve_audio('audio_pvp')
         play_audio_file(audio_path, force_stop=True)  # 抢占
@@ -248,6 +275,7 @@ class AlertManager(QObject):
                     return False
                 audio_path = self.config.resolve_audio('audio_boss')
                 play_audio_file(audio_path)
+                self._last_alert_time = time.time()
                 msg = f"BOSS 出现: {text[:80]}"
                 self.alert_triggered.emit('boss', char_name, msg)
                 return True
@@ -270,6 +298,7 @@ class AlertManager(QObject):
                     return False
                 audio_path = self.config.resolve_audio('audio_dread')
                 play_audio_file(audio_path)
+                self._last_alert_time = time.time()
                 msg = f"无畏舰出现: {text[:80]}"
                 self.alert_triggered.emit('dread', char_name, msg)
                 return True
@@ -287,6 +316,7 @@ class AlertManager(QObject):
                     return False
                 audio_path = self.config.resolve_audio('audio_cloak')
                 play_audio_file(audio_path)
+                self._last_alert_time = time.time()
                 msg = "你的隐身已被解除！"
                 self.alert_triggered.emit('cloak', char_name, msg)
                 return True

@@ -66,7 +66,9 @@ class ConfigManager:
                         self.settings[key] = saved.get(key, default_val)
             except Exception as e:
                 print(f"[Config] Settings.json 读取失败: {e}")
-        self.save_settings()
+        # 只有在首次运行且配置文件不存在时才保存默认设置
+        if not os.path.exists(self._settings_path):
+            self.save_settings()
 
     def save_settings(self):
         """线程安全地将设置写入磁盘（先加锁拷贝，再写文件）"""
