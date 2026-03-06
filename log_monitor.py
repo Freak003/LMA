@@ -2,7 +2,7 @@
 """
 EVE-LMA 日志文件监控器
 负责扫描、打开和实时读取 EVE 战斗日志文件
-v3.1: watchdog 文件系统事件驱动 + 静默冷启动保护
+v3.2: watchdog 事件驱动 + 2s 回退轮询 + 启动阶段 10 分钟过滤
 """
 import os
 import re
@@ -164,13 +164,14 @@ class _LogEventHandler(FileSystemEventHandler):
 
 class LogMonitor(QObject):
     """
-    日志监控器：watchdog 事件驱动 + 静默定时检测
+    日志监控器：watchdog 事件驱动 + 2s 回退轮询 + 静默定时检测
 
-    v3.1:
-    - 文件创建/修改由 watchdog 事件驱动（替代轮询）
-    - 启动时做一次初始全目录扫描
-    - 静默检测保留 5 秒定时器（超时逻辑）
-    - 冷启动保护不变
+    v3.2:
+    - watchdog 监听文件创建/修改（低延迟）
+    - 2 秒回退轮询兜底读取（防止 watchdog 事件丢失）
+    - 启动时仅打开最近 10 分钟活跃的日志文件
+    - 未找到活跃文件时每 1 分钟重试扫描
+    - 静默检测 5 秒定时器 + 冷启动保护
     """
 
     new_line = pyqtSignal(str, str, str, str)   # char_name, ts_beijing, raw_line, filepath
@@ -200,6 +201,14 @@ class LogMonitor(QObject):
         self._sig_file_created.connect(self._on_file_created)
         self._sig_file_modified.connect(self._on_file_modified)
 
+        # 2 秒回退轮询定时器（兜底 watchdog 事件丢失）
+        self._read_timer = QTimer(self)
+        self._read_timer.timeout.connect(self._read_all)
+
+        # 1 分钟重试扫描定时器（启动阶段未找到活跃文件时使用）
+        self._retry_timer = QTimer(self)
+        self._retry_timer.timeout.connect(self._retry_scan)
+
         # 静默检测定时器（保留：超时逻辑需要周期性检查）
         self.silence_timer = QTimer(self)
         self.silence_timer.timeout.connect(self._check_silence)
@@ -208,11 +217,19 @@ class LogMonitor(QObject):
         """启动监控"""
         self.has_received_first_line = False
 
-        # 初始全目录扫描
+        # 初始扫描（仅最近 10 分钟活跃文件）
         self._scan_directory()
+
+        # 如果没找到活跃文件，启动 1 分钟重试定时器
+        if not self.log_files:
+            print("[Monitor] 未找到活跃日志，将每 60 秒重试扫描")
+            self._retry_timer.start(60_000)
 
         # 启动 watchdog 文件监听
         self._start_observer()
+
+        # 2 秒回退轮询
+        self._read_timer.start(2000)
 
         # 静默定时器
         self.silence_timer.start(5000)
@@ -220,6 +237,8 @@ class LogMonitor(QObject):
     def stop(self):
         """停止监控并释放资源"""
         self._stop_observer()
+        self._read_timer.stop()
+        self._retry_timer.stop()
         self.silence_timer.stop()
 
         # 关闭所有日志文件
@@ -314,27 +333,49 @@ class LogMonitor(QObject):
             print(f"[Monitor] 读取文件出错 {fpath}: {e}")
 
     def _scan_directory(self):
-        """初始全目录扫描，发现已有的活跃日志文件"""
+        """扫描目录，仅打开最近 10 分钟内修改过的日志文件"""
         if not self.log_path or not os.path.isdir(self.log_path):
             return
 
+        cutoff = time.time() - 600  # 10 分钟
         changed = False
         try:
             for fname in os.listdir(self.log_path):
                 if not fname.lower().endswith('.txt'):
                     continue
                 fpath = os.path.normpath(os.path.join(self.log_path, fname))
-                if fpath not in self.log_files:
-                    lf = LogFile(fpath)
-                    if lf.open():
-                        self.log_files[fpath] = lf
-                        changed = True
-                        print(f"[Monitor] 发现新日志: {lf.char_name} -> {fpath}")
+                if fpath in self.log_files:
+                    continue
+                # 只打开最近 10 分钟修改过的文件
+                try:
+                    mtime = os.path.getmtime(fpath)
+                except OSError:
+                    continue
+                if mtime < cutoff:
+                    continue
+                lf = LogFile(fpath)
+                if lf.open():
+                    self.log_files[fpath] = lf
+                    changed = True
+                    print(f"[Monitor] 发现活跃日志: {lf.char_name} -> {fpath}")
         except OSError:
             return
 
         if changed:
             self.files_changed.emit(self.get_active_files())
+
+    def _retry_scan(self):
+        """启动阶段重试扫描，找到活跃文件后自动停止"""
+        print("[Monitor] 重试扫描活跃日志...")
+        self._scan_directory()
+        if self.log_files:
+            self._retry_timer.stop()
+            print(f"[Monitor] 已找到 {len(self.log_files)} 个活跃日志，停止重试")
+
+    def _read_all(self):
+        """2 秒回退轮询：读取所有已跟踪文件的新行"""
+        for fpath in list(self.log_files.keys()):
+            self._read_file(fpath)
 
     def _extract_beijing_time(self, line):
         """从日志行中提取 UTC 时间并转为北京时间 (UTC+8)"""
