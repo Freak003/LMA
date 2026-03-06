@@ -39,6 +39,7 @@ pyinstaller ^
     --add-data "BossConfig.txt;." ^
     --add-data "LMA.png;." ^
     --hidden-import "pygame" ^
+    --hidden-import "watchdog" ^
     --icon "LMA.ico" ^
     main.py
 

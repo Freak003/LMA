@@ -12,7 +12,7 @@ import re
 import time
 
 import pygame
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
 
 from config_manager import get_base_path
@@ -38,8 +38,12 @@ _ALERT_STYLES = {
 }
 
 
+# 需要自动关闭的弹窗类型
+_AUTO_CLOSE_TYPES = {'silence', 'boss', 'dread'}
+
+
 class AlertDialog(QDialog):
-    """彩色弹窗对话框"""
+    """彩色弹窗对话框（silence/boss/dread 10 秒自动关闭）"""
 
     def __init__(self, alert_type, message, parent=None):
         super().__init__(parent)
@@ -83,11 +87,31 @@ class AlertDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        ok_btn = QPushButton("确认")
-        ok_btn.clicked.connect(self.accept)
-        btn_row.addWidget(ok_btn)
+        self._ok_btn = QPushButton("确认")
+        self._ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._ok_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
+
+        # 自动关闭（仅 silence / boss / dread）
+        self._countdown = 0
+        self._auto_timer = None
+        if alert_type in _AUTO_CLOSE_TYPES:
+            self._countdown = 10
+            self._ok_btn.setText(f"确认 ({self._countdown})")
+            self._auto_timer = QTimer(self)
+            self._auto_timer.setInterval(1000)
+            self._auto_timer.timeout.connect(self._tick)
+            self._auto_timer.start()
+
+    def _tick(self):
+        """每秒倒计时"""
+        self._countdown -= 1
+        if self._countdown <= 0:
+            self._auto_timer.stop()
+            self.accept()
+        else:
+            self._ok_btn.setText(f"确认 ({self._countdown})")
 
 
 # ── 音频播放 ──

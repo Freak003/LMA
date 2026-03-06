@@ -2,7 +2,7 @@
 """
 EVE-LMA 日志文件监控器
 负责扫描、打开和实时读取 EVE 战斗日志文件
-v3.0: UTF-16 LE 解码修复 + 静默冷启动保护
+v3.1: watchdog 文件系统事件驱动 + 静默冷启动保护
 """
 import os
 import re
@@ -10,6 +10,8 @@ import time
 from datetime import datetime, timedelta
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 
 def _detect_encoding(filepath):
@@ -135,18 +137,49 @@ class LogFile:
         self.close()
 
 
+# ── watchdog 事件处理器 ──
+
+class _LogEventHandler(FileSystemEventHandler):
+    """
+    文件系统事件处理器（运行在 watchdog 后台线程）。
+    通过 LogMonitor 的 Qt 信号安全转发到主线程。
+    """
+
+    def __init__(self, monitor):
+        super().__init__()
+        self._monitor = monitor
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        if event.src_path.lower().endswith('.txt'):
+            self._monitor._sig_file_created.emit(event.src_path)
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        if event.src_path.lower().endswith('.txt'):
+            self._monitor._sig_file_modified.emit(event.src_path)
+
+
 class LogMonitor(QObject):
     """
-    日志监控器：周期性扫描目录、读取新行、检测静默
+    日志监控器：watchdog 事件驱动 + 静默定时检测
 
-    v3.0:
-    - 静默冷启动保护：启动后不自动倒计时，仅在检测到已勾选角色的
-      首行新日志后，才开启 30 秒静默检测。
+    v3.1:
+    - 文件创建/修改由 watchdog 事件驱动（替代轮询）
+    - 启动时做一次初始全目录扫描
+    - 静默检测保留 5 秒定时器（超时逻辑）
+    - 冷启动保护不变
     """
 
     new_line = pyqtSignal(str, str, str, str)   # char_name, ts_beijing, raw_line, filepath
     files_changed = pyqtSignal(list)              # [(filepath, char_name)]
     all_silent = pyqtSignal()                     # 全局静默
+
+    # 内部信号：从 watchdog 后台线程转发到 Qt 主线程
+    _sig_file_created = pyqtSignal(str)
+    _sig_file_modified = pyqtSignal(str)
 
     def __init__(self, log_path="", parent=None):
         super().__init__(parent)
@@ -154,36 +187,41 @@ class LogMonitor(QObject):
         self.log_files = {}           # filepath -> LogFile
         self.silence_triggered = False
         self.silence_threshold = 30   # 静默阈值（秒）
-        self.file_time_window = 100  # 文件发现时间窗口（24小时）
         self.has_received_first_line = False  # 冷启动保护
 
         # 已勾选角色（由 GUI 设置）
         self.checked_chars = set()
 
-        # 定时器
-        self.scan_timer = QTimer(self)
-        self.scan_timer.timeout.connect(self._scan_directory)
+        # watchdog
+        self._observer = None
+        self._event_handler = _LogEventHandler(self)
 
-        self.read_timer = QTimer(self)
-        self.read_timer.timeout.connect(self._read_all)
+        # 内部信号连接（确保在主线程执行）
+        self._sig_file_created.connect(self._on_file_created)
+        self._sig_file_modified.connect(self._on_file_modified)
 
+        # 静默检测定时器（保留：超时逻辑需要周期性检查）
         self.silence_timer = QTimer(self)
         self.silence_timer.timeout.connect(self._check_silence)
 
     def start(self):
         """启动监控"""
         self.has_received_first_line = False
+
+        # 初始全目录扫描
         self._scan_directory()
-        self.scan_timer.start(5000)
-        self.read_timer.start(500)
+
+        # 启动 watchdog 文件监听
+        self._start_observer()
+
+        # 静默定时器
         self.silence_timer.start(5000)
 
     def stop(self):
         """停止监控并释放资源"""
-        self.scan_timer.stop()
-        self.read_timer.stop()
+        self._stop_observer()
         self.silence_timer.stop()
-        
+
         # 关闭所有日志文件
         for lf in self.log_files.values():
             lf.close()
@@ -205,73 +243,98 @@ class LogMonitor(QObject):
         """返回当前监控的文件列表"""
         return [(fp, lf.char_name) for fp, lf in self.log_files.items()]
 
+    # ── watchdog 控制 ──
+
+    def _start_observer(self):
+        """启动 watchdog 目录监听"""
+        if not self.log_path or not os.path.isdir(self.log_path):
+            return
+        self._stop_observer()
+        self._observer = Observer()
+        self._observer.schedule(self._event_handler, self.log_path, recursive=False)
+        self._observer.daemon = True
+        self._observer.start()
+        print(f"[Monitor] watchdog 监听启动: {self.log_path}")
+
+    def _stop_observer(self):
+        """停止 watchdog"""
+        if self._observer:
+            try:
+                self._observer.stop()
+                self._observer.join(timeout=2)
+            except Exception:
+                pass
+            self._observer = None
+
+    # ── 事件回调（主线程） ──
+
+    def _on_file_created(self, fpath):
+        """新文件创建 → 打开并跟踪"""
+        fpath = os.path.normpath(fpath)
+        if fpath in self.log_files:
+            return
+        lf = LogFile(fpath)
+        if lf.open():
+            self.log_files[fpath] = lf
+            print(f"[Monitor] 发现新日志: {lf.char_name} -> {fpath}")
+            self.files_changed.emit(self.get_active_files())
+            # 新文件可能已有内容，立即读取一次
+            self._read_file(fpath)
+
+    def _on_file_modified(self, fpath):
+        """文件修改 → 读取新行"""
+        fpath = os.path.normpath(fpath)
+        if fpath in self.log_files:
+            self._read_file(fpath)
+        elif fpath.lower().endswith('.txt'):
+            # 可能是之前未跟踪的文件被修改，尝试打开
+            self._on_file_created(fpath)
+
+    # ── 读取逻辑 ──
+
+    def _read_file(self, fpath):
+        """读取指定文件的新行"""
+        lf = self.log_files.get(fpath)
+        if not lf:
+            return
+        try:
+            lines = lf.read_new_lines()
+            for line in lines:
+                ts_beijing = self._extract_beijing_time(line)
+                self.new_line.emit(lf.char_name, ts_beijing, line, fpath)
+
+                # 冷启动保护：首行日志到达后开启静默计时
+                if not self.has_received_first_line:
+                    if not self.checked_chars or lf.char_name in self.checked_chars:
+                        self.has_received_first_line = True
+
+            if lines:
+                self.silence_triggered = False
+        except Exception as e:
+            print(f"[Monitor] 读取文件出错 {fpath}: {e}")
+
     def _scan_directory(self):
-        """扫描日志目录，发现新的活跃日志文件"""
+        """初始全目录扫描，发现已有的活跃日志文件"""
         if not self.log_path or not os.path.isdir(self.log_path):
             return
 
-        now = time.time()
-        newly_discovered = set()
-
+        changed = False
         try:
             for fname in os.listdir(self.log_path):
                 if not fname.lower().endswith('.txt'):
                     continue
-                fpath = os.path.join(self.log_path, fname)
-                try:
-                    mtime = os.path.getmtime(fpath)
-                    if abs(now - mtime) <= self.file_time_window:
-                        newly_discovered.add(fpath)
-                except OSError:
-                    continue
+                fpath = os.path.normpath(os.path.join(self.log_path, fname))
+                if fpath not in self.log_files:
+                    lf = LogFile(fpath)
+                    if lf.open():
+                        self.log_files[fpath] = lf
+                        changed = True
+                        print(f"[Monitor] 发现新日志: {lf.char_name} -> {fpath}")
         except OSError:
             return
 
-        changed = False
-
-        # 添加新发现的文件
-        for fpath in newly_discovered:
-            if fpath not in self.log_files:
-                lf = LogFile(fpath)
-                if lf.open():
-                    self.log_files[fpath] = lf
-                    changed = True
-                    print(f"[Monitor] 发现新日志: {lf.char_name} -> {fpath}")
-                else:
-                    # 如果无法打开文件，则跳过
-                    continue
-
-        # 清理已删除的文件
-        to_remove = []
-        for fpath in self.log_files:
-            if not os.path.exists(fpath):
-                to_remove.append(fpath)
-        for fpath in to_remove:
-            self.log_files[fpath].close()
-            del self.log_files[fpath]
-            changed = True
-
         if changed:
             self.files_changed.emit(self.get_active_files())
-
-    def _read_all(self):
-        """读取所有监控文件的新行"""
-        for fpath, lf in list(self.log_files.items()):
-            try:
-                lines = lf.read_new_lines()
-                for line in lines:
-                    ts_beijing = self._extract_beijing_time(line)
-                    self.new_line.emit(lf.char_name, ts_beijing, line, fpath)
-
-                    # 冷启动保护：首行日志到达后开启静默计时
-                    if not self.has_received_first_line:
-                        if not self.checked_chars or lf.char_name in self.checked_chars:
-                            self.has_received_first_line = True
-
-                if lines:
-                    self.silence_triggered = False
-            except Exception as e:
-                print(f"[Monitor] 读取文件出错 {fpath}: {e}")
 
     def _extract_beijing_time(self, line):
         """从日志行中提取 UTC 时间并转为北京时间 (UTC+8)"""
@@ -297,7 +360,7 @@ class LogMonitor(QObject):
             return
 
         now = time.time()
-        
+
         # 检查所有勾选的角色是否都静默了
         active_checked_chars = []
         for lf in self.log_files.values():
@@ -308,7 +371,7 @@ class LogMonitor(QObject):
                     return
                 else:
                     active_checked_chars.append(lf.char_name)
-        
+
         # 如果所有勾选的角色都超过了静默阈值，且还没有触发过静默
         if active_checked_chars and not self.silence_triggered:
             self.silence_triggered = True
