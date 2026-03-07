@@ -1,0 +1,54 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name "EVE-LMA" `
+            --add-data "BossConfig.txt;." `
+            --add-data "LMA.png;." `
+            --hidden-import "pygame" `
+            --hidden-import "watchdog" `
+            --icon "LMA.ico" `
+            main.py
+
+      - name: Copy resources
+        run: |
+          Copy-Item -Force BossConfig.txt dist\EVE-LMA\
+          Copy-Item -Force LMA.ico dist\EVE-LMA\
+          Copy-Item -Force LMA.png dist\EVE-LMA\
+          if (Test-Path audio) {
+            New-Item -ItemType Directory -Force dist\EVE-LMA\audio | Out-Null
+            Copy-Item -Force audio\* dist\EVE-LMA\audio\
+          }
+
+      - name: Create ZIP archive
+        run: Compress-Archive -Path dist\EVE-LMA\* -DestinationPath EVE-LMA-${{ github.ref_name }}.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: EVE-LMA ${{ github.ref_name }}
+          files: EVE-LMA-${{ github.ref_name }}.zip
+          generate_release_notes: true
