@@ -323,9 +323,9 @@ class LogMonitor(QObject):
                 self.new_line.emit(lf.char_name, ts_beijing, line, fpath)
 
                 # 冷启动保护：首行日志到达后开启静默计时
+                # 修复：无论角色是否在 checked_chars 中，只要有日志到达就标记为已启动
                 if not self.has_received_first_line:
-                    if not self.checked_chars or lf.char_name in self.checked_chars:
-                        self.has_received_first_line = True
+                    self.has_received_first_line = True
 
             if lines:
                 self.silence_triggered = False
@@ -401,19 +401,21 @@ class LogMonitor(QObject):
             return
 
         now = time.time()
+        all_silent = True
+        silent_chars = []
 
         # 检查所有勾选的角色是否都静默了
-        active_checked_chars = []
         for lf in self.log_files.values():
             if not self.checked_chars or lf.char_name in self.checked_chars:
                 time_since_activity = now - lf.last_activity
                 if time_since_activity <= self.silence_threshold:
                     # 至少有一个勾选的角色还在活动
-                    return
+                    all_silent = False
+                    break
                 else:
-                    active_checked_chars.append(lf.char_name)
+                    silent_chars.append(lf.char_name)
 
         # 如果所有勾选的角色都超过了静默阈值，且还没有触发过静默
-        if active_checked_chars and not self.silence_triggered:
+        if all_silent and silent_chars and not self.silence_triggered:
             self.silence_triggered = True
             self.all_silent.emit()

@@ -4,7 +4,7 @@ EVE-LMA 警报管理器
 v3.0:
   - PVP 玩家交战检测（最高优先级 + 音频抢占）
   - 无畏检测排除 "Dread Guristas"
-  - 冷却机制: PVP 10 分钟间隔重置 / 隐身 30 秒 / BOSS & 无畏 10 分钟
+  - 冷却机制：PVP 10 分钟间隔重置 / 隐身 30 秒 / BOSS & 无畏 10 分钟
   - 各类警报独立开关
 """
 import os
@@ -43,7 +43,7 @@ _AUTO_CLOSE_TYPES = {'silence', 'boss', 'dread'}
 
 
 class AlertDialog(QDialog):
-    """彩色弹窗对话框（silence/boss/dread 10 秒自动关闭）"""
+    """彩色弹窗对话框（silence/boss/dread 20 秒自动关闭）"""
 
     def __init__(self, alert_type, message, parent=None):
         super().__init__(parent)
@@ -97,7 +97,7 @@ class AlertDialog(QDialog):
         self._countdown = 0
         self._auto_timer = None
         if alert_type in _AUTO_CLOSE_TYPES:
-            self._countdown = 10
+            self._countdown = 20  # 修复：10 秒改为 20 秒
             self._ok_btn.setText(f"确认 ({self._countdown})")
             self._auto_timer = QTimer(self)
             self._auto_timer.setInterval(1000)
@@ -134,29 +134,31 @@ def play_audio_file(filepath, force_stop=False):
             pygame.mixer.music.play()
             return True
         else:
-            print(f"[Audio] 文件不存在: {filepath}")
+            print(f"[Audio] 文件不存在：{filepath}")
     except Exception as e:
-        print(f"[Audio] 播放失败: {e}")
-        # 尝试重新初始化音频系统
+        print(f"[Audio] 播放失败：{e}")
+        # 修复：尝试重新初始化音频系统，只有成功才设为 True
         try:
             pygame.mixer.quit()
             pygame.mixer.init()
             _AUDIO_AVAILABLE = True
         except:
             _AUDIO_AVAILABLE = False
+            raise  # 重新抛出异常，避免状态不一致
     return False
 
 
 # PVP 玩家攻击纯文本模式:
-# “来自 Freak 03[AMIYA](救世级) - 武器 - 结果”
-# “对 Freak 03[AMIYA](救世级) - 武器 - 结果”
-# “from Attacker[CORP](Ship) - weapon - result”
-# “to Target[CORP](Ship) - weapon - result”
+# "来自 Freak 03[AMIYA](救世级) - 武器 - 结果"
+# "对 Freak 03[AMIYA](救世级) - 武器 - 结果"
+# "from Attacker[CORP](Ship) - weapon - result"
+# "to Target[CORP](Ship) - weapon - result"
+# 修复：使用贪婪匹配确保完整捕获玩家名字
 _PVP_PATTERN = re.compile(
-    r'(?:来自|对|from|to)\s+'
-    r'([^\[]+?)'              # 攻击者/目标名字 (非贪婪匹配)
-    r'\[([^\]]+)\]'         # [军团标签]
-    r'\s*\(([^)]+)\)',      # (船型)
+    r'(?:来自 | 对|from|to)\s+'
+    r'(.+?)'                  # 攻击者/目标名字（非贪婪但至少一个字符）
+    r'\[([^\]]+)\]'           # [军团标签]
+    r'\(([^)]+)\)',           # (船型)
     re.IGNORECASE
 )
 
@@ -262,8 +264,8 @@ class AlertManager(QObject):
     def _check_pvp(self, raw_line, text, char_name):
         """
         PVP / 玩家交战检测:
-        纯文本格式: 来自/对 玩家名[军团](船型) - 武器 - 结果
-        冷却: 10 分钟间隔重置（每次命中刷新 CD）
+        纯文本格式：来自/对 玩家名 [军团](船型) - 武器 - 结果
+        冷却：10 分钟间隔重置（每次命中刷新 CD）
         """
         match = _PVP_PATTERN.search(text)
         if not match:
@@ -311,7 +313,7 @@ class AlertManager(QObject):
                 audio_path = self.config.resolve_audio('audio_boss')
                 play_audio_file(audio_path)
                 self._last_alert_time = time.time()
-                msg = f"BOSS 出现: {text[:80]}"
+                msg = f"BOSS 出现：{text[:80]}"
                 self.alert_triggered.emit('boss', char_name, msg)
                 return True
         return False
@@ -334,7 +336,7 @@ class AlertManager(QObject):
                 audio_path = self.config.resolve_audio('audio_dread')
                 play_audio_file(audio_path)
                 self._last_alert_time = time.time()
-                msg = f"无畏舰出现: {text[:80]}"
+                msg = f"无畏舰出现：{text[:80]}"
                 self.alert_triggered.emit('dread', char_name, msg)
                 return True
         return False

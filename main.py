@@ -592,8 +592,10 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def closeEvent(self, event):
-        # 停止防抖定时器，立即 flush
+        # 修复：先断开连接再停止定时器，防止 pending 信号在窗口关闭后触发
         self._save_timer.stop()
+        self._save_timer.timeout.disconnect()
+        # 同步音频路径到配置
         for key, edit in self.audio_edits.items():
             self.config.set(key, edit.text())
         self.config.save_settings()   # 同步写盘
