@@ -23,9 +23,10 @@ from log_parser import extract_plain_text, is_combat_line, is_notify_line
 try:
     pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
     _AUDIO_AVAILABLE = True
-except:
+    print("[Audio] 初始化成功")
+except Exception as e:
     _AUDIO_AVAILABLE = False
-    print("[Audio] 初始化失败")
+    print(f"[Audio] 初始化失败：{e}")
 
 
 # ── 颜色常量 ──
@@ -124,14 +125,19 @@ def play_audio_file(filepath, force_stop=False):
     global _AUDIO_AVAILABLE
     try:
         if not _AUDIO_AVAILABLE:
+            print("[Audio] 音频系统不可用")
             return False
 
         if force_stop:
             pygame.mixer.music.stop()
 
         if filepath and os.path.isfile(filepath):
+            print(f"[Audio] 准备播放：{filepath}")
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
+            # 等待一小段时间确保音频开始播放
+            pygame.time.wait(100)
+            print("[Audio] 播放命令已发送")
             return True
         else:
             print(f"[Audio] 文件不存在：{filepath}")
@@ -142,9 +148,11 @@ def play_audio_file(filepath, force_stop=False):
             pygame.mixer.quit()
             pygame.mixer.init()
             _AUDIO_AVAILABLE = True
-        except:
+            print("[Audio] 重新初始化成功")
+        except Exception as e2:
+            print(f"[Audio] 重新初始化失败：{e2}")
             _AUDIO_AVAILABLE = False
-            raise  # 重新抛出异常，避免状态不一致
+        # 不再抛出异常，避免中断警报流程
     return False
 
 
