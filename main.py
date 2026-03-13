@@ -253,6 +253,9 @@ QScrollArea { border: none; background: transparent; }
 
 
 class MainWindow(QMainWindow):
+    # 日志输出最大行数限制
+    MAX_LOG_LINES = 2000
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EVE-LMA v3.0")
@@ -507,6 +510,25 @@ class MainWindow(QMainWindow):
         self.monitor.set_checked_chars(checked)
 
     # ================================================================
+    #  日志输出管理
+    # ================================================================
+
+    def _trim_log_output(self):
+        """自动清理多余的日志行，防止内存无限增长"""
+        doc = self.log_output.document()
+        if doc.blockCount() > self.MAX_LOG_LINES:
+            # 计算需要删除的行数
+            lines_to_remove = doc.blockCount() - self.MAX_LOG_LINES
+            cursor = self.log_output.textCursor()
+            cursor.movePosition(cursor.Start)
+            # 删除最旧的行
+            for _ in range(lines_to_remove):
+                cursor.select(cursor.LineUnderCursor)
+                cursor.removeSelectedText()
+                if not cursor.atEnd():
+                    cursor.deleteChar()  # 删除换行符
+
+    # ================================================================
     #  日志行处理
     # ================================================================
 
@@ -530,6 +552,8 @@ class MainWindow(QMainWindow):
             prefix = f'<span style="color:#00ccaa;">[{ts_beijing}]</span> ' if ts_beijing else ''
             char_tag = f'<span style="color:#5a9aff;">[{char_name}]</span> '
             self.log_output.append(f"{prefix}{char_tag}{display_html}")
+            # 自动清理多余的日志行
+            self._trim_log_output()
 
         # 运行警报检测
         self.alert_mgr.check_line(char_name, raw_line)
