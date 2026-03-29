@@ -7,6 +7,7 @@ EVE-LMA v3.0 主窗口
   - 活跃角色复选框过滤
   - 隐私模式
   - 5 路音频自定义
+  - 全局音量控制 + 系统托盘后台运行
 """
 import ctypes
 import os
@@ -19,7 +20,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog,
     QGroupBox, QCheckBox, QGridLayout, QFrame, QScrollArea, QLayout,
-    QSizePolicy,
+    QSizePolicy, QSystemTrayIcon, QMenu, QAction, QSlider
 )
 
 
@@ -249,6 +250,22 @@ QStatusBar QLabel {
 }
 
 QScrollArea { border: none; background: transparent; }
+
+/* ── QSlider (音量滑块) ── */
+QSlider::groove:horizontal {
+    border: 1px solid #1a2a38;
+    height: 6px;
+    background: #0c0c18;
+    margin: 2px 0;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #00ccaa;
+    border: 1px solid #00aa88;
+    width: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
+}
 """
 
 
@@ -259,12 +276,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EVE-LMA v3.0")
-        self.setMinimumSize(820, 680)
+        self.setMinimumSize(820, 720)
 
         # 设置图标
-        icon_path = os.path.join(get_base_path(), 'LMA.png')
-        if os.path.isfile(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+        self._icon_path = os.path.join(get_base_path(), 'LMA.png')
+        if os.path.isfile(self._icon_path):
+            self.setWindowIcon(QIcon(self._icon_path))
 
         self.config = ConfigManager()
         self.monitor = LogMonitor(self.config.get('log_path', ''), parent=self)
@@ -274,6 +291,7 @@ class MainWindow(QMainWindow):
         self._char_checks = {}
 
         self._build_ui()
+        self._build_tray()
         self._connect_signals()
 
         # 500ms 防抖保存定时器
@@ -323,8 +341,8 @@ class MainWindow(QMainWindow):
         char_group.setLayout(self.char_layout)
         root.addWidget(char_group)
 
-        # ── 警报开关 + 隐私模式 ──
-        toggle_group = QGroupBox("警报控制")
+        # ── 警报开关 + 隐私模式 + 音量控制 ──
+        toggle_group = QGroupBox("控制与音量")
         toggle_grid = QGridLayout()
         toggle_grid.setSpacing(10)
 
@@ -342,19 +360,31 @@ class MainWindow(QMainWindow):
         self.chk_pvp.setChecked(self.config.get('alert_pvp_enabled', True))
         self.chk_privacy.setChecked(self.config.get('privacy_mode', False))
 
-        toggle_grid.addWidget(self.chk_boss, 0, 0)
-        toggle_grid.addWidget(self.chk_dread, 0, 1)
-        toggle_grid.addWidget(self.chk_cloak, 0, 2)
-        toggle_grid.addWidget(self.chk_silence, 1, 0)
-        toggle_grid.addWidget(self.chk_pvp, 1, 1)
-
         # 隐私模式用警告色
         self.chk_privacy.setStyleSheet(
             "QCheckBox { color: #ff6a5e; font-weight: bold; }"
             "QCheckBox:hover { color: #ff8a7e; }"
         )
+
+        toggle_grid.addWidget(self.chk_boss, 0, 0)
+        toggle_grid.addWidget(self.chk_dread, 0, 1)
+        toggle_grid.addWidget(self.chk_cloak, 0, 2)
+        toggle_grid.addWidget(self.chk_silence, 1, 0)
+        toggle_grid.addWidget(self.chk_pvp, 1, 1)
         toggle_grid.addWidget(self.chk_privacy, 1, 2)
 
+        # 音量滑块
+        vol_layout = QHBoxLayout()
+        vol_layout.addWidget(QLabel("警声音量:"))
+        self.vol_slider = QSlider(Qt.Horizontal)
+        self.vol_slider.setRange(0, 100)
+        self.vol_slider.setValue(int(self.config.get('volume', 100)))
+        self.vol_slider.setMinimumWidth(120)
+        self.vol_slider.valueChanged.connect(self._on_volume_changed)
+        vol_layout.addWidget(self.vol_slider)
+        
+        # 将音量条跨列放在最后一行
+        toggle_grid.addLayout(vol_layout, 2, 0, 1, 3)
         toggle_group.setLayout(toggle_grid)
         root.addWidget(toggle_group)
 
@@ -391,6 +421,25 @@ class MainWindow(QMainWindow):
 
         # ── 状态栏 ──
         self.statusBar().showMessage("就绪")
+
+    def _build_tray(self):
+        """系统托盘及菜单构建"""
+        self.tray_icon = QSystemTrayIcon(self)
+        if os.path.isfile(self._icon_path):
+            self.tray_icon.setIcon(QIcon(self._icon_path))
+
+        tray_menu = QMenu()
+        show_action = QAction("显示主窗口", self)
+        show_action.triggered.connect(self.showNormal)
+        quit_action = QAction("完全退出", self)
+        quit_action.triggered.connect(self._force_quit)
+
+        tray_menu.addAction(show_action)
+        tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
 
     # ================================================================
     #  信号连接
@@ -436,7 +485,6 @@ class MainWindow(QMainWindow):
         )
         if fpath:
             base = get_base_path()
-            # 尽量存储相对路径
             try:
                 rel = os.path.relpath(fpath, base)
                 if not rel.startswith('..'):
@@ -447,12 +495,16 @@ class MainWindow(QMainWindow):
             self.config.set(key, fpath)
             self._save_timer.start()
 
+    def _on_volume_changed(self, value):
+        """响应音量调整"""
+        self.config.set('volume', value)
+        self._save_timer.start()
+
     # ================================================================
     #  角色复选框
     # ================================================================
 
     def _reset_char_list(self):
-        """清空角色复选框"""
         for cb in self._char_checks.values():
             cb.setParent(None)
             cb.deleteLater()
@@ -460,21 +512,14 @@ class MainWindow(QMainWindow):
         self.char_placeholder.show()
 
     def _on_files_changed(self, file_list):
-        """
-        当监控文件列表变化时，更新角色复选框。
-        file_list: [(filepath, char_name), ...]
-        """
         current_names = set(cn for _, cn in file_list)
-        print(f"[GUI] files_changed: {current_names}")
 
-        # 移除已不再活跃的角色
         for name in list(self._char_checks.keys()):
             if name not in current_names:
                 cb = self._char_checks.pop(name)
                 cb.setParent(None)
                 cb.deleteLater()
 
-        # 添加新角色
         for _, char_name in file_list:
             if char_name and char_name != "Unknown" and char_name not in self._char_checks:
                 cb = QCheckBox(char_name)
@@ -491,7 +536,6 @@ class MainWindow(QMainWindow):
         self._update_checked_chars()
 
     def _ensure_char_checkbox(self, char_name):
-        """确保角色有对应的复选框（兜底机制）"""
         if not char_name or char_name == "Unknown":
             return
         if char_name in self._char_checks:
@@ -505,7 +549,6 @@ class MainWindow(QMainWindow):
         self._update_checked_chars()
 
     def _update_checked_chars(self, _=None):
-        """同步已勾选角色集合到 monitor"""
         checked = {name for name, cb in self._char_checks.items() if cb.isChecked()}
         self.monitor.set_checked_chars(checked)
 
@@ -514,73 +557,61 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _trim_log_output(self):
-        """自动清理多余的日志行，防止内存无限增长"""
         doc = self.log_output.document()
         if doc.blockCount() > self.MAX_LOG_LINES:
-            # 计算需要删除的行数
             lines_to_remove = doc.blockCount() - self.MAX_LOG_LINES
             cursor = self.log_output.textCursor()
             cursor.movePosition(cursor.Start)
-            # 删除最旧的行
             for _ in range(lines_to_remove):
                 cursor.select(cursor.LineUnderCursor)
                 cursor.removeSelectedText()
                 if not cursor.atEnd():
-                    cursor.deleteChar()  # 删除换行符
+                    cursor.deleteChar()
 
     # ================================================================
     #  日志行处理
     # ================================================================
 
     def _on_new_line(self, char_name, ts_beijing, raw_line, filepath):
-        """收到新日志行"""
-        # 兜底：如果该角色还没有复选框，动态创建
         self._ensure_char_checkbox(char_name)
 
-        # 检查角色过滤
         checked = {name for name, cb in self._char_checks.items() if cb.isChecked()}
         if checked and char_name not in checked:
             return
 
-        # 隐私模式：不显示日志内容，仅静默时刷新
         if self.config.get('privacy_mode', False):
-            # 不做任何输出，保持当前屏幕不变
             pass
         else:
-            # 正常输出
             display_html = parse_log_line(raw_line)
             prefix = f'<span style="color:#00ccaa;">[{ts_beijing}]</span> ' if ts_beijing else ''
             char_tag = f'<span style="color:#5a9aff;">[{char_name}]</span> '
             self.log_output.append(f"{prefix}{char_tag}{display_html}")
-            # 自动清理多余的日志行
             self._trim_log_output()
 
-        # 运行警报检测
         self.alert_mgr.check_line(char_name, raw_line)
 
     def _on_silence(self):
-        """全局静默回调"""
-        # 隐私模式下刷新角色监控状态
         if self.config.get('privacy_mode', False):
             self._refresh_privacy_display()
         self.alert_mgr.check_silence()
 
     def _on_alert(self, alert_type, char_name, message):
-        """弹窗显示警报"""
+        """非阻塞式弹窗"""
         full_msg = message
         if char_name:
             full_msg = f"[{char_name}] {message}"
-        dlg = AlertDialog(alert_type, full_msg, self)
-        dlg.exec_()
+        
+        # 将 MainWindow 设为父对象，这样生命周期由 Qt 托管，不再发生意外回收导致崩溃
+        dlg = AlertDialog(alert_type, full_msg, parent=self)
+        dlg.show()
 
     # ================================================================
     #  开关 / 隐私
     # ================================================================
 
     def _save_toggle(self, key, value):
-        """UI 立即响应 → 内存更新 → 防抖延迟写盘"""
         self.config.set(key, value)
-        self._save_timer.start()  # (re)start 500ms debounce
+        self._save_timer.start() 
 
     def _on_privacy_toggled(self, checked):
         self.config.set('privacy_mode', checked)
@@ -592,7 +623,6 @@ class MainWindow(QMainWindow):
             self.log_output.append('<span style="color:#4a5068;">隐私模式已关闭，恢复日志输出</span>')
 
     def _refresh_privacy_display(self):
-        """刷新隐私模式显示：一次性显示所有已勾选角色的监控状态"""
         self.log_output.clear()
         ts = datetime.now().strftime('%H:%M:%S')
         self.log_output.append(
@@ -612,25 +642,37 @@ class MainWindow(QMainWindow):
             )
 
     # ================================================================
-    #  关闭
+    #  关闭事件
     # ================================================================
 
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.showNormal()
+            self.activateWindow()
+
     def closeEvent(self, event):
-        # 修复：先断开连接再停止定时器，防止 pending 信号在窗口关闭后触发
+        """窗口点击关闭按钮时，如果托盘存在则最小化到托盘"""
+        if self.tray_icon.isVisible():
+            self.hide()
+            self.tray_icon.showMessage("EVE-LMA", "正在后台运行，双击托盘图标恢复", QSystemTrayIcon.Information, 2000)
+            event.ignore()
+        else:
+            self._force_quit()
+
+    def _force_quit(self):
+        """完全清理并退出"""
         self._save_timer.stop()
         self._save_timer.timeout.disconnect()
-        # 同步音频路径到配置
         for key, edit in self.audio_edits.items():
             self.config.set(key, edit.text())
-        self.config.save_settings()   # 同步写盘
+        self.config.save_settings()   
         self.monitor.stop()
-        event.accept()
+        QApplication.quit()
 
 
 # ── 入口 ──
 
 def main():
-    # Windows 任务栏图标
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EVE-LMA.v3")
     except Exception:
@@ -639,8 +681,10 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_STYLE)
+    
+    # 允许最后一个窗口关闭时不直接退出程序（交给托盘管理）
+    app.setQuitOnLastWindowClosed(False)
 
-    # 设置应用程序图标
     icon_path = os.path.join(get_base_path(), 'LMA.png')
     if os.path.isfile(icon_path):
         app.setWindowIcon(QIcon(icon_path))
@@ -648,7 +692,6 @@ def main():
     window = MainWindow()
     window.show()
     
-    # 检查隐私模式配置，如果启用则刷新显示
     if window.config.get('privacy_mode', False):
         window._refresh_privacy_display()
     

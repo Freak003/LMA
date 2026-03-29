@@ -15,7 +15,7 @@ if %errorlevel% neq 0 (
 
 REM 检查依赖是否已安装（跳过已满足的情况）
 echo [1/4] 检查依赖...
-pip install -r requirements.txt --quiet --disable-pip-version-check 2>nul
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if %errorlevel% neq 0 (
     echo [错误] 依赖安装失败。
     pause
