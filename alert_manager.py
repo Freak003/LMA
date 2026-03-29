@@ -1,25 +1,15 @@
 # -*- coding: utf-8 -*-
-"""
-EVE-LMA 警报管理器
-v3.0:
-  - PVP 玩家交战检测（最高优先级 + 音频抢占）
-  - 无畏检测排除 "Dread Guristas"
-  - 冷却机制：PVP 10 分钟间隔重置 / 隐身 30 秒 / BOSS & 无畏 10 分钟
-  - 各类警报独立开关
-"""
 import os
 import re
 import time
 
 import pygame
-from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QLabel, QVBoxLayout, QHBoxLayout, QPushButton
 
-from config_manager import get_base_path
 from log_parser import extract_plain_text, is_combat_line, is_notify_line
 
 
-# ── 预初始化音频系统 ──
 try:
     pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
     _AUDIO_AVAILABLE = True
@@ -29,7 +19,6 @@ except Exception as e:
     print(f"[Audio] 初始化失败：{e}")
 
 
-# ── 颜色常量 ──
 _ALERT_STYLES = {
     'boss':    {'bg': '#8B0000', 'fg': '#FFD700', 'title': '⚠ BOSS 出现 ⚠'},
     'dread':   {'bg': '#FF4500', 'fg': '#FFFFFF', 'title': '⚠ 无畏舰出现 ⚠'},
@@ -38,16 +27,14 @@ _ALERT_STYLES = {
     'pvp':     {'bg': '#DC143C', 'fg': '#FFFFFF', 'title': '🔥 玩家交战 🔥'},
 }
 
-
-# 需要自动关闭的弹窗类型
 _AUTO_CLOSE_TYPES = {'silence', 'boss', 'dread'}
 
 
 class AlertDialog(QDialog):
-    """彩色弹窗对话框（silence/boss/dread 20 秒自动关闭）"""
-
     def __init__(self, alert_type, message, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)  # 优化：窗口关闭时自动释放内存
+        
         style = _ALERT_STYLES.get(alert_type, _ALERT_STYLES['boss'])
         self.setWindowTitle(style['title'])
         self.setMinimumSize(420, 200)
@@ -94,11 +81,10 @@ class AlertDialog(QDialog):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        # 自动关闭（仅 silence / boss / dread）
         self._countdown = 0
         self._auto_timer = None
         if alert_type in _AUTO_CLOSE_TYPES:
-            self._countdown = 20  # 修复：10 秒改为 20 秒
+            self._countdown = 20
             self._ok_btn.setText(f"确认 ({self._countdown})")
             self._auto_timer = QTimer(self)
             self._auto_timer.setInterval(1000)
@@ -106,7 +92,6 @@ class AlertDialog(QDialog):
             self._auto_timer.start()
 
     def _tick(self):
-        """每秒倒计时"""
         self._countdown -= 1
         if self._countdown <= 0:
             self._auto_timer.stop()
@@ -114,63 +99,39 @@ class AlertDialog(QDialog):
         else:
             self._ok_btn.setText(f"确认 ({self._countdown})")
 
-
-# ── 音频播放 ──
-
-def play_audio_file(filepath, force_stop=False):
-    """
-    播放音频文件。
-    force_stop=True 时先停止当前正在播放的音频（PVP 抢占用）。
-    """
+def play_audio_file(filepath, force_stop=False, volume=1.0):
     global _AUDIO_AVAILABLE
     try:
         if not _AUDIO_AVAILABLE:
-            print("[Audio] 音频系统不可用")
             return False
 
         if force_stop:
             pygame.mixer.music.stop()
 
         if filepath and os.path.isfile(filepath):
-            print(f"[Audio] 准备播放：{filepath}")
+            pygame.mixer.music.set_volume(volume)  # 优化：应用音量
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
-            # 等待一小段时间确保音频开始播放
-            pygame.time.wait(100)
-            print("[Audio] 播放命令已发送")
+            # 优化：去除了此处 pygame.time.wait(100) 以防阻塞 UI
             return True
-        else:
-            print(f"[Audio] 文件不存在：{filepath}")
     except Exception as e:
         print(f"[Audio] 播放失败：{e}")
-        # 修复：尝试重新初始化音频系统，只有成功才设为 True
         try:
             pygame.mixer.quit()
             pygame.mixer.init()
             _AUDIO_AVAILABLE = True
-            print("[Audio] 重新初始化成功")
-        except Exception as e2:
-            print(f"[Audio] 重新初始化失败：{e2}")
+        except Exception:
             _AUDIO_AVAILABLE = False
-        # 不再抛出异常，避免中断警报流程
     return False
 
-
-# PVP 玩家攻击纯文本模式:
-# "来自 Freak 03[AMIYA](救世级) - 武器 - 结果"
-# "对 Freak 03[AMIYA](救世级) - 武器 - 结果"
-# "from Attacker[CORP](Ship) - weapon - result"
-# "to Target[CORP](Ship) - weapon - result"
-# 修复：使用贪婪匹配确保完整捕获玩家名字
 _PVP_PATTERN = re.compile(
     r'(?:来自 | 对|from|to)\s+'
-    r'(.+?)'                  # 攻击者/目标名字（非贪婪但至少一个字符）
-    r'\[([^\]]+)\]'           # [军团标签]
-    r'\(([^)]+)\)',           # (船型)
+    r'(.+?)'
+    r'\[([^\]]+)\]'
+    r'\(([^)]+)\)',
     re.IGNORECASE
 )
 
-# 无畏检测关键词（独立于 BossConfig）
 _DREAD_KEYWORDS = [
     "Dreadnought", "无畏舰",
     "Revelation", "天启级", "启示级",
@@ -180,101 +141,63 @@ _DREAD_KEYWORDS = [
     "Zirnitra", "兹尼特拉级",
 ]
 
-
 class AlertManager(QObject):
-    """
-    警报管理器:
-        check_line()  → 对每行日志执行全部检测
-        check_silence() → 静默警报入口
-
-    冷却说明:
-        BOSS  : 10 分钟 固定 CD
-        无畏  : 10 分钟 固定 CD
-        隐身  : 30 秒 固定 CD
-        PVP   : 10 分钟 间隔重置 CD（每次命中刷新计时）
-        静默  : 无冷却（由 LogMonitor 的 silence_triggered 控制去重）
-    """
-
-    alert_triggered = pyqtSignal(str, str, str)  # alert_type, char_name, message
+    alert_triggered = pyqtSignal(str, str, str)
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = config
 
-        # 冷却记录 {type: last_trigger_time}
         self._cooldowns = {
             'boss': 0,
             'dread': 0,
             'cloak': 0,
             'pvp': 0,
         }
-
-        # 上次任意警报触发时间（用于静默宽限期）
         self._last_alert_time = 0
-        self._silence_grace_period = 120  # 警报后 120 秒内不触发静默
+        self._silence_grace_period = 120
 
-        # 冷却时长（秒）
         self._cd_durations = {
-            'boss': 600,   # 10 min
+            'boss': 600,
             'dread': 600,
             'cloak': 30,
             'pvp': 600,
         }
 
-
-
-    # ---------- 公共入口 ----------
+    def _get_volume(self):
+        return self.config.get('volume', 100) / 100.0
 
     def check_line(self, char_name, raw_line):
-        """
-        对一行日志依次检测:
-            PVP → BOSS → 无畏 → 隐身解除
-        命中即返回（PVP 具有最高优先级并抢占音频）。
-        """
         text = extract_plain_text(raw_line)
 
-        # PVP 活跃跟踪已不需要（CD 刷新时直接延长宽限期）
-
-        # ── PVP 检测 ──
         if self._is_enabled('pvp') and is_combat_line(raw_line):
             if self._check_pvp(raw_line, text, char_name):
                 return
 
-        # ── BOSS 检测 ──
         if self._is_enabled('boss') and is_combat_line(raw_line):
             if self._check_boss(text, char_name):
                 return
 
-        # ── 无畏舰检测 ──
         if self._is_enabled('dread') and is_combat_line(raw_line):
             if self._check_dread(raw_line, text, char_name):
                 return
 
-        # ── 隐身解除 ──
         if self._is_enabled('cloak') and is_notify_line(raw_line):
             if self._check_cloak(text, char_name):
                 return
 
     def check_silence(self):
-        """全局静默警报（无冷却，外部已去重）"""
         if not self._is_enabled('silence'):
             return
 
-        # 宽限期检查：最近警报后 120 秒内不触发静默
-        if time.time() - self._last_alert_time < self._silence_grace_period:
+        # 优化：使用 monotonic 时间计算流逝
+        if time.monotonic() - self._last_alert_time < self._silence_grace_period:
             return
         audio_path = self.config.resolve_audio('audio_silence')
-        play_audio_file(audio_path)
+        play_audio_file(audio_path, volume=self._get_volume())
         self.alert_triggered.emit('silence', '', '超过 30 秒未检测到新的战斗日志')
 
-    # ---------- 各类检测 ----------
-
     def _check_pvp(self, raw_line, text, char_name):
-        """
-        PVP / 玩家交战检测:
-        纯文本格式：来自/对 玩家名 [军团](船型) - 武器 - 结果
-        冷却：10 分钟间隔重置（每次命中刷新 CD）
-        """
         match = _PVP_PATTERN.search(text)
         if not match:
             return False
@@ -283,22 +206,17 @@ class AlertManager(QObject):
         corp = match.group(2).strip()
         ship = match.group(3).strip()
 
-        # 排除 NPC（军团标签为空或匹配 NPC 模式）
         if not corp or not attacker:
             return False
 
-        # 排除一些明显的 NPC 标签
         npc_corps = ['Guristas', 'Sansha', 'Serpentis', 'Blood', 'Angel', 'ORE']
-        if corp in npc_corps or any(npc in corp for npc in ['Guristas', 'Sansha', 'Serpentis', 'Blood', 'Angel', 'ORE']):
+        if corp in npc_corps or any(npc in corp for npc in npc_corps):
             return False
 
-        # 间隔重置 CD：每次命中都刷新计时
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - self._cooldowns['pvp']
         if elapsed < self._cd_durations['pvp']:
-            # 刷新 CD 时间但不重复报警
             self._cooldowns['pvp'] = now
-            # 持续战斗中也延长静默宽限期
             self._last_alert_time = now
             return False
 
@@ -306,32 +224,26 @@ class AlertManager(QObject):
         self._last_alert_time = now
 
         audio_path = self.config.resolve_audio('audio_pvp')
-        play_audio_file(audio_path, force_stop=True)  # 抢占
+        play_audio_file(audio_path, force_stop=True, volume=self._get_volume())
 
         msg = f"玩家 {attacker} [{corp}]({ship}) 正在攻击！"
         self.alert_triggered.emit('pvp', char_name, msg)
         return True
 
     def _check_boss(self, text, char_name):
-        """BOSS 检测：根据 BossConfig.txt 的前缀匹配"""
         for prefix in self.config.boss_prefixes:
             if prefix and prefix in text:
                 if not self._check_cd('boss'):
                     return False
                 audio_path = self.config.resolve_audio('audio_boss')
-                play_audio_file(audio_path)
-                self._last_alert_time = time.time()
+                play_audio_file(audio_path, volume=self._get_volume())
+                self._last_alert_time = time.monotonic()
                 msg = f"BOSS 出现：{text[:80]}"
                 self.alert_triggered.emit('boss', char_name, msg)
                 return True
         return False
 
     def _check_dread(self, raw_line, text, char_name):
-        """
-        无畏舰检测:
-        匹配关键词但排除 "Dread Guristas"（属于 BOSS 检测范畴）。
-        """
-        # 排除 Dread Guristas
         if re.search(r'Dread\s+Guristas', text, re.IGNORECASE):
             return False
         if '恐惧古斯塔斯' in text:
@@ -342,15 +254,14 @@ class AlertManager(QObject):
                 if not self._check_cd('dread'):
                     return False
                 audio_path = self.config.resolve_audio('audio_dread')
-                play_audio_file(audio_path)
-                self._last_alert_time = time.time()
+                play_audio_file(audio_path, volume=self._get_volume())
+                self._last_alert_time = time.monotonic()
                 msg = f"无畏舰出现：{text[:80]}"
                 self.alert_triggered.emit('dread', char_name, msg)
                 return True
         return False
 
     def _check_cloak(self, text, char_name):
-        """隐身解除检测"""
         cloak_phrases = [
             "你的隐形状态已解除", "your cloak deactivates due to proximity",
             "你的隐形已被解除", "your cloak has been deactivated",
@@ -362,23 +273,19 @@ class AlertManager(QObject):
                 if not self._check_cd('cloak'):
                     return False
                 audio_path = self.config.resolve_audio('audio_cloak')
-                play_audio_file(audio_path)
-                self._last_alert_time = time.time()
+                play_audio_file(audio_path, volume=self._get_volume())
+                self._last_alert_time = time.monotonic()
                 msg = "你的隐身已被解除！"
                 self.alert_triggered.emit('cloak', char_name, msg)
                 return True
         return False
 
-    # ---------- 内部工具 ----------
-
     def _is_enabled(self, alert_type):
-        """检查该类型警报是否开启（通过 mutex 安全读取）"""
         key = f'alert_{alert_type}_enabled'
         return self.config.get(key, True)
 
     def _check_cd(self, alert_type):
-        """检查固定冷却。通过返回 True，否则返回 False。"""
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - self._cooldowns.get(alert_type, 0)
         if elapsed < self._cd_durations.get(alert_type, 0):
             return False
