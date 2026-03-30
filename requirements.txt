@@ -1,4 +1,11 @@
+# EVE-LMA 运行时依赖
 PyQt5>=5.15
 pygame>=2.0
 watchdog>=3.0
+
+# 打包工具（仅打包时需要）
 pyinstaller>=5.0
+
+# 测试依赖
+pytest>=7.0
+pytest-cov>=4.0

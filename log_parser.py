@@ -3,12 +3,19 @@
 EVE-LMA 日志行解析器
 将 EVE 日志 HTML 标记转为 Qt 富文本，并提供纯文本提取。
 v3.0: 维持原有功能，无实质改动
+v3.7: 添加类型注解、引入 logging
 """
 import re
+from typing import Dict
+
+from logger_config import get_logger
+
+# 获取日志记录器
+logger = get_logger('EVE-LMA')
 
 
 # EVE 日志使用的颜色前缀映射
-_COLOR_MAP = {
+_COLOR_MAP: Dict[str, str] = {
     '0xffffffff': '#FFFFFF',
     '0xffff0000': '#FF0000',
     '0xff00ff00': '#00FF00',
@@ -24,8 +31,16 @@ _COLOR_MAP = {
 }
 
 
-def parse_eve_color(color_str):
-    """将 EVE 颜色（如 0xffff6600）转为 HTML 颜色码"""
+def parse_eve_color(color_str: str) -> str:
+    """
+    将 EVE 颜色（如 0xffff6600）转为 HTML 颜色码
+    
+    Args:
+        color_str: EVE 颜色字符串
+    
+    Returns:
+        HTML 颜色码
+    """
     if not color_str:
         return '#CCCCCC'
     c = color_str.lower().strip()
@@ -36,10 +51,16 @@ def parse_eve_color(color_str):
     return '#CCCCCC'
 
 
-def parse_log_line(raw):
+def parse_log_line(raw: str) -> str:
     """
     解析 EVE 日志行中的 HTML 标签，返回 Qt 可渲染的 HTML 字符串。
     支持: <font>, <b>, <a>, <br>
+    
+    Args:
+        raw: 原始日志行
+    
+    Returns:
+        Qt 可渲染的 HTML 字符串
     """
     if not raw:
         return ""
@@ -47,7 +68,7 @@ def parse_log_line(raw):
     html = raw
 
     # <font color="0x..."> → <span style="color:...">，</font> → </span>
-    def _replace_font_color(m):
+    def _replace_font_color(m) -> str:
         color = parse_eve_color(m.group(1))
         return f'<span style="color:{color}">'
     html = re.sub(r'<font\s+color="([^"]*)">', _replace_font_color, html)
@@ -64,8 +85,16 @@ def parse_log_line(raw):
     return html
 
 
-def extract_plain_text(raw):
-    """去除所有 HTML / EVE 标记，返回纯文本"""
+def extract_plain_text(raw: str) -> str:
+    """
+    去除所有 HTML / EVE 标记，返回纯文本
+    
+    Args:
+        raw: 原始日志行
+    
+    Returns:
+        纯文本内容
+    """
     if not raw:
         return ""
     text = re.sub(r'<[^>]+>', '', raw)
@@ -73,11 +102,27 @@ def extract_plain_text(raw):
     return text
 
 
-def is_combat_line(raw):
-    """判断日志行是否为战斗相关行（(combat) 标记）"""
+def is_combat_line(raw: str) -> bool:
+    """
+    判断日志行是否为战斗相关行（(combat) 标记）
+    
+    Args:
+        raw: 原始日志行
+    
+    Returns:
+        是否为战斗行
+    """
     return bool(re.search(r'\(\s*combat\s*\)', raw, re.IGNORECASE))
 
 
-def is_notify_line(raw):
-    """判断日志行是否为通知行（(notify) 标记）"""
+def is_notify_line(raw: str) -> bool:
+    """
+    判断日志行是否为通知行（(notify) 标记）
+    
+    Args:
+        raw: 原始日志行
+    
+    Returns:
+        是否为通知行
+    """
     return bool(re.search(r'\(\s*notify\s*\)', raw, re.IGNORECASE))

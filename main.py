@@ -1,264 +1,59 @@
 # -*- coding: utf-8 -*-
 """
-EVE-LMA v3.0 主窗口
+EVE-LMA v3.7 主窗口
 功能:
   - 路径选择 + 日志输出
   - 5 类警报独立开关（BOSS / 无畏 / 隐身 / 静默 / PVP）
   - 活跃角色复选框过滤
   - 隐私模式
   - 5 路音频自定义
+  
+v3.7:
+  - 使用拆分后的模块
+  - 添加类型注解
+  - 引入 logging
+  - 使用 constants.py 常量
 """
 import ctypes
 import os
 import sys
 from datetime import datetime
+from typing import Dict, List, Set
 
-from PyQt5.QtCore import Qt, QTimer, QRect, QSize, QPoint
-from PyQt5.QtGui import QIcon, QColor
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog,
-    QGroupBox, QCheckBox, QGridLayout, QFrame, QScrollArea, QLayout,
-    QSizePolicy,
+    QGroupBox, QCheckBox, QGridLayout, QScrollArea,
 )
-
-
-class FlowLayout(QLayout):
-    """自动换行的流式布局，用于角色复选框区域"""
-
-    def __init__(self, parent=None, spacing=10):
-        super().__init__(parent)
-        self._items = []
-        self._spacing = spacing
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index):
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        m = self.contentsMargins()
-        size += QSize(m.left() + m.right(), m.top() + m.bottom())
-        return size
-
-    def _do_layout(self, rect, test_only):
-        m = self.contentsMargins()
-        effective = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
-        x = effective.x()
-        y = effective.y()
-        row_height = 0
-
-        for item in self._items:
-            w = item.sizeHint().width()
-            h = item.sizeHint().height()
-            if x + w > effective.right() + 1 and row_height > 0:
-                x = effective.x()
-                y += row_height + self._spacing
-                row_height = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
-            x += w + self._spacing
-            row_height = max(row_height, h)
-
-        return y + row_height - rect.y() + m.bottom()
 
 from config_manager import ConfigManager, get_base_path
 from log_monitor import LogMonitor
 from log_parser import parse_log_line, extract_plain_text
-from alert_manager import AlertManager, AlertDialog
+from alert_manager import AlertManager
+from dialogs import AlertDialog
+from styles import DARK_STYLE, PRIVACY_WARNING_STYLE, CHAR_PLACEHOLDER_STYLE
+from widgets import FlowLayout
+from constants import DEBOUNCE_SAVE_INTERVAL, MAX_LOG_LINES
+from logger_config import init_logging, get_logger
 
-
-# ── 深空黑暗主题 ──
-DARK_STYLE = """
-/* ═══ EVE-LMA Deep Space Theme ═══ */
-* { outline: none; }
-
-QMainWindow {
-    background-color: #080810;
-}
-
-QWidget {
-    background-color: #080810;
-    color: #a0a8b8;
-    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-    font-size: 13px;
-}
-
-/* ── GroupBox ── */
-QGroupBox {
-    border: 1px solid #1a2a38;
-    border-radius: 5px;
-    margin-top: 12px;
-    padding: 18px 8px 8px 8px;
-    font-weight: bold;
-    color: #00ccaa;
-    background-color: #0a0a14;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 2px 10px;
-    background-color: #0a0a14;
-    border: 1px solid #1a2a38;
-    border-radius: 3px;
-}
-
-/* ── Label ── */
-QLabel {
-    background: transparent;
-    color: #8890a0;
-}
-
-/* ── LineEdit ── */
-QLineEdit {
-    background-color: #0c0c18;
-    border: 1px solid #1a2a38;
-    border-radius: 3px;
-    padding: 5px 10px;
-    color: #c0c8d8;
-    selection-background-color: #1a4060;
-}
-QLineEdit:focus {
-    border-color: #00ccaa;
-}
-
-/* ── Button ── */
-QPushButton {
-    background-color: #10101c;
-    border: 1px solid #1a2a38;
-    border-radius: 3px;
-    padding: 6px 18px;
-    color: #a0a8b8;
-    font-weight: bold;
-}
-QPushButton:hover {
-    background-color: #181830;
-    border-color: #00ccaa;
-    color: #e0e8f0;
-}
-QPushButton:pressed {
-    background-color: #0a2a28;
-    border-color: #00aa88;
-}
-
-/* ── TextEdit (日志区) ── */
-QTextEdit {
-    background-color: #04040a;
-    border: 1px solid #12121e;
-    border-radius: 3px;
-    padding: 4px;
-    color: #7880a0;
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 12px;
-    selection-background-color: #1a4060;
-}
-
-/* ══ CheckBox 核心样式 ══ */
-QCheckBox {
-    spacing: 10px;
-    color: #7078a0;
-    padding: 4px 2px;
-}
-QCheckBox:hover {
-    color: #d0d8e8;
-}
-QCheckBox::indicator {
-    width: 22px;
-    height: 22px;
-    border: 2px solid #2a2a44;
-    border-radius: 5px;
-    background-color: #0a0a16;
-}
-QCheckBox::indicator:hover {
-    border-color: #00ccaa;
-    background-color: #0c1a1a;
-}
-QCheckBox::indicator:checked {
-    background-color: #00ccaa;
-    border-color: #00ccaa;
-}
-QCheckBox::indicator:checked:hover {
-    background-color: #00ddbb;
-    border-color: #00ddbb;
-}
-
-/* ── ScrollBar ── */
-QScrollBar:vertical {
-    background: #080810;
-    width: 8px;
-    border: none;
-}
-QScrollBar::handle:vertical {
-    background: #1c2836;
-    border-radius: 4px;
-    min-height: 30px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #2a3a50;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
-QScrollBar:horizontal {
-    background: #080810;
-    height: 8px;
-    border: none;
-}
-QScrollBar::handle:horizontal {
-    background: #1c2836;
-    border-radius: 4px;
-    min-width: 30px;
-}
-
-/* ── StatusBar ── */
-QStatusBar {
-    background-color: #04040a;
-    color: #4a5068;
-    border-top: 1px solid #12121e;
-    font-size: 12px;
-}
-QStatusBar QLabel {
-    color: #4a5068;
-    background: transparent;
-}
-
-QScrollArea { border: none; background: transparent; }
-"""
+# 初始化日志系统
+init_logging(log_to_file=False)
+logger = get_logger('EVE-LMA')
 
 
 class MainWindow(QMainWindow):
-    # 日志输出最大行数限制
-    MAX_LOG_LINES = 2000
+    """
+    EVE-LMA 主窗口
+    
+    负责协调日志监控、警报管理和用户界面交互。
+    """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """初始化主窗口"""
         super().__init__()
-        self.setWindowTitle("EVE-LMA v3.0")
+        self.setWindowTitle("EVE-LMA v3.7")
         self.setMinimumSize(820, 680)
 
         # 设置图标
@@ -271,15 +66,15 @@ class MainWindow(QMainWindow):
         self.alert_mgr = AlertManager(self.config, parent=self)
 
         # 角色复选框映射 {char_name: QCheckBox}
-        self._char_checks = {}
+        self._char_checks: Dict[str, QCheckBox] = {}
 
         self._build_ui()
         self._connect_signals()
 
-        # 500ms 防抖保存定时器
+        # 防抖保存定时器
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
-        self._save_timer.setInterval(500)
+        self._save_timer.setInterval(DEBOUNCE_SAVE_INTERVAL)
         self._save_timer.timeout.connect(self.config.save_settings)
 
         # 加载已有路径自动开始
@@ -292,11 +87,14 @@ class MainWindow(QMainWindow):
         if self.config.get('privacy_mode', False):
             self._refresh_privacy_display()
 
+        logger.info("[GUI] 主窗口初始化完成")
+
     # ================================================================
     #  UI 构建
     # ================================================================
 
-    def _build_ui(self):
+    def _build_ui(self) -> None:
+        """构建用户界面"""
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
@@ -318,7 +116,7 @@ class MainWindow(QMainWindow):
         char_group = QGroupBox("活跃角色  (仅勾选的角色触发警报)")
         self.char_layout = FlowLayout(spacing=12)
         self.char_placeholder = QLabel("等待日志文件...")
-        self.char_placeholder.setStyleSheet("color: #6c7086; font-style: italic;")
+        self.char_placeholder.setStyleSheet(CHAR_PLACEHOLDER_STYLE)
         self.char_layout.addWidget(self.char_placeholder)
         char_group.setLayout(self.char_layout)
         root.addWidget(char_group)
@@ -349,10 +147,7 @@ class MainWindow(QMainWindow):
         toggle_grid.addWidget(self.chk_pvp, 1, 1)
 
         # 隐私模式用警告色
-        self.chk_privacy.setStyleSheet(
-            "QCheckBox { color: #ff6a5e; font-weight: bold; }"
-            "QCheckBox:hover { color: #ff8a7e; }"
-        )
+        self.chk_privacy.setStyleSheet(PRIVACY_WARNING_STYLE)
         toggle_grid.addWidget(self.chk_privacy, 1, 2)
 
         toggle_group.setLayout(toggle_grid)
@@ -363,7 +158,7 @@ class MainWindow(QMainWindow):
         audio_layout = QGridLayout()
         audio_layout.setSpacing(6)
 
-        self.audio_edits = {}
+        self.audio_edits: Dict[str, QLineEdit] = {}
         audio_items = [
             ("audio_boss",    "BOSS 音频:"),
             ("audio_dread",   "无畏 音频:"),
@@ -396,7 +191,8 @@ class MainWindow(QMainWindow):
     #  信号连接
     # ================================================================
 
-    def _connect_signals(self):
+    def _connect_signals(self) -> None:
+        """连接信号和槽"""
         # Monitor → GUI
         self.monitor.new_line.connect(self._on_new_line)
         self.monitor.files_changed.connect(self._on_files_changed)
@@ -417,7 +213,8 @@ class MainWindow(QMainWindow):
     #  路径 & 音频
     # ================================================================
 
-    def _browse_path(self):
+    def _browse_path(self) -> None:
+        """浏览选择日志目录"""
         folder = QFileDialog.getExistingDirectory(self, "选择日志目录",
                                                    self.config.get('log_path', ''))
         if folder:
@@ -428,8 +225,10 @@ class MainWindow(QMainWindow):
             self._reset_char_list()
             self.monitor.set_path(folder)
             self.statusBar().showMessage(f"监控中: {folder}")
+            logger.info(f"[GUI] 切换日志目录: {folder}")
 
-    def _choose_audio(self, key, edit_widget):
+    def _choose_audio(self, key: str, edit_widget: QLineEdit) -> None:
+        """选择音频文件"""
         fpath, _ = QFileDialog.getOpenFileName(
             self, "选择音频文件", get_base_path(),
             "音频文件 (*.mp3 *.wav *.ogg);;所有文件 (*)"
@@ -451,7 +250,7 @@ class MainWindow(QMainWindow):
     #  角色复选框
     # ================================================================
 
-    def _reset_char_list(self):
+    def _reset_char_list(self) -> None:
         """清空角色复选框"""
         for cb in self._char_checks.values():
             cb.setParent(None)
@@ -459,13 +258,15 @@ class MainWindow(QMainWindow):
         self._char_checks.clear()
         self.char_placeholder.show()
 
-    def _on_files_changed(self, file_list):
+    def _on_files_changed(self, file_list: List[tuple]) -> None:
         """
         当监控文件列表变化时，更新角色复选框。
-        file_list: [(filepath, char_name), ...]
+        
+        Args:
+            file_list: [(filepath, char_name), ...]
         """
         current_names = set(cn for _, cn in file_list)
-        print(f"[GUI] files_changed: {current_names}")
+        logger.debug(f"[GUI] files_changed: {current_names}")
 
         # 移除已不再活跃的角色
         for name in list(self._char_checks.keys()):
@@ -490,7 +291,7 @@ class MainWindow(QMainWindow):
 
         self._update_checked_chars()
 
-    def _ensure_char_checkbox(self, char_name):
+    def _ensure_char_checkbox(self, char_name: str) -> None:
         """确保角色有对应的复选框（兜底机制）"""
         if not char_name or char_name == "Unknown":
             return
@@ -504,21 +305,21 @@ class MainWindow(QMainWindow):
         self.char_placeholder.hide()
         self._update_checked_chars()
 
-    def _update_checked_chars(self, _=None):
+    def _update_checked_chars(self, _=None) -> None:
         """同步已勾选角色集合到 monitor"""
         checked = {name for name, cb in self._char_checks.items() if cb.isChecked()}
-        self.monitor.set_checked_chars(checked)
+        self.monitor.set_checked_chars(list(checked))
 
     # ================================================================
     #  日志输出管理
     # ================================================================
 
-    def _trim_log_output(self):
+    def _trim_log_output(self) -> None:
         """自动清理多余的日志行，防止内存无限增长"""
         doc = self.log_output.document()
-        if doc.blockCount() > self.MAX_LOG_LINES:
+        if doc.blockCount() > MAX_LOG_LINES:
             # 计算需要删除的行数
-            lines_to_remove = doc.blockCount() - self.MAX_LOG_LINES
+            lines_to_remove = doc.blockCount() - MAX_LOG_LINES
             cursor = self.log_output.textCursor()
             cursor.movePosition(cursor.Start)
             # 删除最旧的行
@@ -532,8 +333,16 @@ class MainWindow(QMainWindow):
     #  日志行处理
     # ================================================================
 
-    def _on_new_line(self, char_name, ts_beijing, raw_line, filepath):
-        """收到新日志行"""
+    def _on_new_line(self, char_name: str, ts_beijing: str, raw_line: str, filepath: str) -> None:
+        """
+        收到新日志行
+        
+        Args:
+            char_name: 角色名
+            ts_beijing: 北京时间
+            raw_line: 原始日志行
+            filepath: 文件路径
+        """
         # 兜底：如果该角色还没有复选框，动态创建
         self._ensure_char_checkbox(char_name)
 
@@ -558,15 +367,22 @@ class MainWindow(QMainWindow):
         # 运行警报检测
         self.alert_mgr.check_line(char_name, raw_line)
 
-    def _on_silence(self):
+    def _on_silence(self) -> None:
         """全局静默回调"""
         # 隐私模式下刷新角色监控状态
         if self.config.get('privacy_mode', False):
             self._refresh_privacy_display()
         self.alert_mgr.check_silence()
 
-    def _on_alert(self, alert_type, char_name, message):
-        """弹窗显示警报"""
+    def _on_alert(self, alert_type: str, char_name: str, message: str) -> None:
+        """
+        弹窗显示警报
+        
+        Args:
+            alert_type: 警报类型
+            char_name: 角色名
+            message: 警报消息
+        """
         full_msg = message
         if char_name:
             full_msg = f"[{char_name}] {message}"
@@ -577,12 +393,24 @@ class MainWindow(QMainWindow):
     #  开关 / 隐私
     # ================================================================
 
-    def _save_toggle(self, key, value):
-        """UI 立即响应 → 内存更新 → 防抖延迟写盘"""
+    def _save_toggle(self, key: str, value: bool) -> None:
+        """
+        UI 立即响应 → 内存更新 → 防抖延迟写盘
+        
+        Args:
+            key: 设置键名
+            value: 设置值
+        """
         self.config.set(key, value)
-        self._save_timer.start()  # (re)start 500ms debounce
+        self._save_timer.start()  # (re)start debounce
 
-    def _on_privacy_toggled(self, checked):
+    def _on_privacy_toggled(self, checked: bool) -> None:
+        """
+        隐私模式切换
+        
+        Args:
+            checked: 是否开启
+        """
         self.config.set('privacy_mode', checked)
         self._save_timer.start()
         if checked:
@@ -591,7 +419,7 @@ class MainWindow(QMainWindow):
             self.log_output.clear()
             self.log_output.append('<span style="color:#4a5068;">隐私模式已关闭，恢复日志输出</span>')
 
-    def _refresh_privacy_display(self):
+    def _refresh_privacy_display(self) -> None:
         """刷新隐私模式显示：一次性显示所有已勾选角色的监控状态"""
         self.log_output.clear()
         ts = datetime.now().strftime('%H:%M:%S')
@@ -615,21 +443,28 @@ class MainWindow(QMainWindow):
     #  关闭
     # ================================================================
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """窗口关闭事件处理"""
         # 修复：先断开连接再停止定时器，防止 pending 信号在窗口关闭后触发
         self._save_timer.stop()
-        self._save_timer.timeout.disconnect()
+        try:
+            self._save_timer.timeout.disconnect()
+        except TypeError:
+            pass  # 可能已经断开
+        
         # 同步音频路径到配置
         for key, edit in self.audio_edits.items():
             self.config.set(key, edit.text())
         self.config.save_settings()   # 同步写盘
         self.monitor.stop()
+        logger.info("[GUI] 主窗口关闭")
         event.accept()
 
 
 # ── 入口 ──
 
-def main():
+def main() -> None:
+    """程序入口"""
     # Windows 任务栏图标
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EVE-LMA.v3")
@@ -652,6 +487,7 @@ def main():
     if window.config.get('privacy_mode', False):
         window._refresh_privacy_display()
     
+    logger.info("[Main] EVE-LMA v3.7 启动完成")
     sys.exit(app.exec_())
 
 
