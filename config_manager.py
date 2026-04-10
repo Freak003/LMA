@@ -51,6 +51,12 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "alert_pvp_enabled": True,
     # 隐私模式（默认关闭）
     "privacy_mode": False,
+    # 音量设置 (0.0 - 1.0)
+    "audio_volume": 1.0,
+    # 角色分组配置 {char_name: group_name}
+    "char_groups": {},
+    # 全局静默是否按分组检测
+    "silence_by_group": False,
 }
 
 
@@ -212,3 +218,135 @@ class ConfigManager:
         if os.path.isabs(rel):
             return rel
         return os.path.join(self.base_dir, rel)
+
+    # ========== 角色分组管理 ==========
+
+    def get_char_groups(self) -> Dict[str, str]:
+        """
+        获取所有角色分组配置（线程安全）
+        
+        Returns:
+            {角色名：组名} 的映射
+        """
+        self._mutex.lock()
+        try:
+            return dict(self.settings.get('char_groups', {}))
+        finally:
+            self._mutex.unlock()
+
+    def set_char_group(self, char_name: str, group_name: str) -> None:
+        """
+        设置角色的分组（线程安全）
+        
+        Args:
+            char_name: 角色名
+            group_name: 组名
+        """
+        self._mutex.lock()
+        try:
+            if 'char_groups' not in self.settings:
+                self.settings['char_groups'] = {}
+            self.settings['char_groups'][char_name] = group_name
+        finally:
+            self._mutex.unlock()
+
+    def remove_char_group(self, char_name: str) -> None:
+        """
+        移除角色的分组配置（线程安全）
+        
+        Args:
+            char_name: 角色名
+        """
+        self._mutex.lock()
+        try:
+            if 'char_groups' in self.settings and char_name in self.settings['char_groups']:
+                del self.settings['char_groups'][char_name]
+        finally:
+            self._mutex.unlock()
+
+    def get_groups(self) -> list:
+        """
+        获取所有唯一的组名（线程安全）
+        
+        Returns:
+            组名列表
+        """
+        self._mutex.lock()
+        try:
+            groups = set(self.settings.get('char_groups', {}).values())
+            return sorted(list(groups))
+        finally:
+            self._mutex.unlock()
+
+    def get_chars_in_group(self, group_name: str) -> list:
+        """
+        获取指定组中的所有角色（线程安全）
+        
+        Args:
+            group_name: 组名
+        
+        Returns:
+            角色名列表
+        """
+        self._mutex.lock()
+        try:
+            groups = self.settings.get('char_groups', {})
+            return [char for char, grp in groups.items() if grp == group_name]
+        finally:
+            self._mutex.unlock()
+
+    def is_silence_by_group(self) -> bool:
+        """
+        获取是否启用按组静默检测（线程安全）
+        
+        Returns:
+            是否启用按组静默
+        """
+        self._mutex.lock()
+        try:
+            return self.settings.get('silence_by_group', False)
+        finally:
+            self._mutex.unlock()
+
+    def set_silence_by_group(self, enabled: bool) -> None:
+        """
+        设置是否启用按组静默检测（线程安全）
+        
+        Args:
+            enabled: 是否启用
+        """
+        self._mutex.lock()
+        try:
+            self.settings['silence_by_group'] = enabled
+        finally:
+            self._mutex.unlock()
+
+    # ========== 音量管理 ==========
+
+    def get_audio_volume(self) -> float:
+        """
+        获取音量设置（线程安全）
+        
+        Returns:
+            音量值 (0.0 - 1.0)
+        """
+        self._mutex.lock()
+        try:
+            return self.settings.get('audio_volume', 1.0)
+        finally:
+            self._mutex.unlock()
+
+    def set_audio_volume(self, volume: float) -> None:
+        """
+        设置音量（线程安全）
+        
+        Args:
+            volume: 音量值 (0.0 - 1.0)
+        """
+        self._mutex.lock()
+        try:
+            # 限制音量范围
+            volume = max(0.0, min(1.0, volume))
+            self.settings['audio_volume'] = volume
+        finally:
+            self._mutex.unlock()

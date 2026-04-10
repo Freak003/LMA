@@ -25,7 +25,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog,
-    QGroupBox, QCheckBox, QGridLayout, QScrollArea,
+    QGroupBox, QCheckBox, QGridLayout, QScrollArea, QComboBox, QSlider, QMenu,
 )
 
 from config_manager import ConfigManager, get_base_path
@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(icon_path))
 
         self.config = ConfigManager()
-        self.monitor = LogMonitor(self.config.get('log_path', ''), parent=self)
+        self.monitor = LogMonitor(self.config.get('log_path', ''), config=self.config, parent=self)
         self.alert_mgr = AlertManager(self.config, parent=self)
 
         # 角色复选框映射 {char_name: QCheckBox}
@@ -114,12 +114,47 @@ class MainWindow(QMainWindow):
 
         # ── 角色区域（FlowLayout 自动换行） ──
         char_group = QGroupBox("活跃角色  (仅勾选的角色触发警报)")
+        char_layout_root = QVBoxLayout()
+        
+        # 角色分组控制行
+        group_control_row = QHBoxLayout()
+        
+        # 分组下拉框
+        from PyQt5.QtWidgets import QComboBox
+        self.group_combo = QComboBox()
+        self.group_combo.setEditable(True)
+        self.group_combo.setPlaceholderText("选择或输入分组")
+        self.group_combo.setMinimumWidth(150)
+        group_control_row.addWidget(QLabel("分组:"))
+        group_control_row.addWidget(self.group_combo)
+        
+        # 设置分组按钮
+        self.set_group_btn = QPushButton("设置分组")
+        self.set_group_btn.clicked.connect(self._set_char_group)
+        group_control_row.addWidget(self.set_group_btn)
+        
+        # 按组静默开关
+        self.chk_silence_by_group = QCheckBox("按组静默")
+        self.chk_silence_by_group.setChecked(self.config.is_silence_by_group())
+        self.chk_silence_by_group.toggled.connect(self._on_silence_by_group_toggled)
+        group_control_row.addWidget(self.chk_silence_by_group)
+        
+        group_control_row.addStretch()
+        
+        char_layout_root.addLayout(group_control_row)
+        
+        # 角色复选框布局
         self.char_layout = FlowLayout(spacing=12)
         self.char_placeholder = QLabel("等待日志文件...")
         self.char_placeholder.setStyleSheet(CHAR_PLACEHOLDER_STYLE)
         self.char_layout.addWidget(self.char_placeholder)
-        char_group.setLayout(self.char_layout)
+        char_layout_root.addLayout(self.char_layout)
+        
+        char_group.setLayout(char_layout_root)
         root.addWidget(char_group)
+        
+        # 更新分组下拉框
+        self._update_group_combo()
 
         # ── 警报开关 + 隐私模式 ──
         toggle_group = QGroupBox("警报控制")
@@ -175,6 +210,25 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda checked, k=key, e=edit: self._choose_audio(k, e))
             audio_layout.addWidget(btn, row, 2)
             self.audio_edits[key] = edit
+        
+        # 音量控制
+        from PyQt5.QtWidgets import QSlider
+        volume_label = QLabel("音量:")
+        audio_layout.addWidget(volume_label, len(audio_items), 0)
+        
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setMinimum(0)
+        self.volume_slider.setMaximum(100)
+        # 从配置加载音量 (0.0-1.0 转为 0-100)
+        initial_volume = int(self.config.get_audio_volume() * 100)
+        self.volume_slider.setValue(initial_volume)
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        self.volume_slider.setMinimumWidth(280)
+        audio_layout.addWidget(self.volume_slider, len(audio_items), 1)
+        
+        self.volume_value_label = QLabel(f"{initial_volume}%")
+        self.volume_value_label.setMinimumWidth(50)
+        audio_layout.addWidget(self.volume_value_label, len(audio_items), 2)
 
         audio_group.setLayout(audio_layout)
         root.addWidget(audio_group)
@@ -300,10 +354,79 @@ class MainWindow(QMainWindow):
         cb = QCheckBox(char_name)
         cb.setChecked(True)
         cb.toggled.connect(self._update_checked_chars)
+        # 添加右键菜单显示分组信息
+        cb.setContextMenuPolicy(Qt.CustomContextMenu)
+        cb.customContextMenuRequested.connect(
+            lambda pos, name=char_name: self._show_char_group_menu(name, pos)
+        )
         self._char_checks[char_name] = cb
         self.char_layout.addWidget(cb)
         self.char_placeholder.hide()
         self._update_checked_chars()
+        
+        # 如果角色已有分组，更新 UI
+        self._update_char_group_display(char_name)
+
+    def _show_char_group_menu(self, char_name: str, pos) -> None:
+        """显示角色分组右键菜单"""
+        from PyQt5.QtWidgets import QMenu
+        
+        menu = QMenu()
+        menu.addAction(f"角色：{char_name}")
+        menu.addSeparator()
+        
+        # 获取当前分组
+        groups = self.config.get_char_groups()
+        current_group = groups.get(char_name, "未分组")
+        menu.addAction(f"当前分组：{current_group}")
+        menu.addSeparator()
+        
+        # 添加分组选项
+        for group in self.config.get_groups():
+            action = menu.addAction(f"移到 {group}")
+            action.triggered.connect(
+                lambda checked, g=group: self._move_char_to_group(char_name, g)
+            )
+        
+        # 添加移除分组选项
+        if char_name in groups:
+            action = menu.addAction("移除分组")
+            action.triggered.connect(
+                lambda checked: self._remove_char_group(char_name)
+            )
+        
+        # 显示菜单
+        cb = self._char_checks.get(char_name)
+        if cb:
+            menu.exec_(cb.mapToGlobal(pos))
+
+    def _move_char_to_group(self, char_name: str, group_name: str) -> None:
+        """移动角色到指定分组"""
+        self.config.set_char_group(char_name, group_name)
+        self._update_group_combo()
+        self._update_char_group_display(char_name)
+        self._save_timer.start()
+        logger.info(f"[Group] 移动 {char_name} 到分组 {group_name}")
+
+    def _remove_char_group(self, char_name: str) -> None:
+        """移除角色的分组"""
+        self.config.remove_char_group(char_name)
+        self._update_char_group_display(char_name)
+        self._save_timer.start()
+        logger.info(f"[Group] 移除 {char_name} 的分组")
+
+    def _update_char_group_display(self, char_name: str) -> None:
+        """更新角色复选框的分组显示"""
+        cb = self._char_checks.get(char_name)
+        if not cb:
+            return
+        
+        groups = self.config.get_char_groups()
+        group = groups.get(char_name)
+        if group:
+            cb.setText(f"{char_name} [{group}]")
+        else:
+            cb.setText(char_name)
 
     def _update_checked_chars(self, _=None) -> None:
         """同步已勾选角色集合到 monitor"""
@@ -418,6 +541,79 @@ class MainWindow(QMainWindow):
         else:
             self.log_output.clear()
             self.log_output.append('<span style="color:#4a5068;">隐私模式已关闭，恢复日志输出</span>')
+
+    # ================================================================
+    #  音量控制
+    # ================================================================
+
+    def _on_volume_changed(self, value: int) -> None:
+        """
+        音量滑块变化事件
+        
+        Args:
+            value: 音量值 (0-100)
+        """
+        volume = value / 100.0
+        self.config.set_audio_volume(volume)
+        self.volume_value_label.setText(f"{value}%")
+        self._save_timer.start()
+        logger.debug(f"[Volume] 音量设置为：{volume}")
+
+    # ================================================================
+    #  角色分组
+    # ================================================================
+
+    def _update_group_combo(self) -> None:
+        """更新分组下拉框的选项"""
+        current_text = self.group_combo.currentText()
+        self.group_combo.clear()
+        
+        groups = self.config.get_groups()
+        if groups:
+            self.group_combo.addItems(groups)
+        
+        # 恢复之前的选择（如果有）
+        if current_text and current_text in groups:
+            self.group_combo.setCurrentText(current_text)
+
+    def _set_char_group(self) -> None:
+        """为选中的角色设置分组"""
+        # 获取当前选中的角色（最后一个点击的复选框）
+        selected_chars = [name for name, cb in self._char_checks.items() if cb.isChecked()]
+        
+        if not selected_chars:
+            logger.warning("[Group] 未选择任何角色")
+            return
+        
+        group_name = self.group_combo.currentText().strip()
+        if not group_name:
+            logger.warning("[Group] 未输入分组名称")
+            return
+        
+        # 为每个选中的角色设置分组
+        for char_name in selected_chars:
+            self.config.set_char_group(char_name, group_name)
+            logger.info(f"[Group] 设置角色 {char_name} 到分组 {group_name}")
+        
+        # 更新分组下拉框
+        self._update_group_combo()
+        
+        # 显示提示
+        self.statusBar().showMessage(f"已将 {len(selected_chars)} 个角色分配到 {group_name}")
+        self._save_timer.start()
+
+    def _on_silence_by_group_toggled(self, checked: bool) -> None:
+        """
+        按组静默切换
+        
+        Args:
+            checked: 是否启用
+        """
+        self.config.set_silence_by_group(checked)
+        self._save_timer.start()
+        mode = "按组" if checked else "全局"
+        self.statusBar().showMessage(f"静默检测模式：{mode}")
+        logger.info(f"[Silence] 静默检测模式：{'按组' if checked else '全局'}")
 
     def _refresh_privacy_display(self) -> None:
         """刷新隐私模式显示：一次性显示所有已勾选角色的监控状态"""

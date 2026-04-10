@@ -26,7 +26,7 @@ from constants import (
     COOLDOWN_BOSS, COOLDOWN_DREAD, COOLDOWN_CLOAK, COOLDOWN_PVP,
     SILENCE_GRACE_PERIOD, AUDIO_FREQUENCY, AUDIO_SIZE, AUDIO_CHANNELS,
     AUDIO_BUFFER, AUDIO_PLAY_WAIT, NPC_CORP_KEYWORDS, CLOAK_DEACTIVATE_PHRASES,
-    DREADNOUGHT_KEYWORDS
+    DREADNOUGHT_KEYWORDS, DEFAULT_AUDIO_VOLUME
 )
 from dialogs import AlertDialog
 from log_parser import extract_plain_text, is_combat_line, is_notify_line
@@ -64,6 +64,24 @@ def init_audio() -> bool:
         return False
 
 
+def set_audio_volume(volume: float) -> None:
+    """
+    设置音量
+    
+    Args:
+        volume: 音量值 (0.0 - 1.0)
+    """
+    global _AUDIO_AVAILABLE
+    if not _AUDIO_AVAILABLE:
+        return
+    try:
+        # pygame.mixer.music.set_volume 接受 0.0 到 1.0 之间的值
+        pygame.mixer.music.set_volume(max(0.0, min(1.0, volume)))
+        logger.debug(f"[Audio] 音量设置为：{volume}")
+    except pygame.error as e:
+        logger.error(f"[Audio] 设置音量失败：{e}")
+
+
 def play_audio_file(filepath: str, force_stop: bool = False) -> bool:
     """
     播放音频文件。
@@ -92,6 +110,7 @@ def play_audio_file(filepath: str, force_stop: bool = False) -> bool:
         if filepath and os.path.isfile(filepath):
             logger.debug(f"[Audio] 准备播放: {filepath}")
             pygame.mixer.music.load(filepath)
+            # 音量由调用方通过 set_audio_volume 设置
             pygame.mixer.music.play()
             pygame.time.wait(AUDIO_PLAY_WAIT)
             logger.debug("[Audio] 播放命令已发送")
@@ -181,6 +200,14 @@ class AlertManager(QObject):
             'cloak': COOLDOWN_CLOAK,
             'pvp': COOLDOWN_PVP,
         }
+        
+        # 初始化音量
+        self._init_volume()
+    
+    def _init_volume(self) -> None:
+        """初始化音量设置"""
+        volume = self.config.get_audio_volume()
+        set_audio_volume(volume)
 
     # ---------- 公共入口 ----------
 

@@ -21,6 +21,7 @@ from constants import (
     RETRY_SCAN_INTERVAL, SILENCE_CHECK_INTERVAL, LOG_FILE_EXTENSION,
     LOG_HEADER_MAX_LINES
 )
+from config_manager import ConfigManager
 from logger_config import get_logger
 
 # 获取日志记录器
@@ -244,16 +245,18 @@ class LogMonitor(QObject):
     _sig_file_created = pyqtSignal(str)
     _sig_file_modified = pyqtSignal(str)
 
-    def __init__(self, log_path: str = "", parent=None) -> None:
+    def __init__(self, log_path: str = "", config: ConfigManager = None, parent=None) -> None:
         """
         初始化日志监控器
         
         Args:
             log_path: 日志目录路径
+            config: 配置管理器实例
             parent: 父对象
         """
         super().__init__(parent)
         self.log_path = log_path
+        self.config = config
         self.log_files: Dict[str, LogFile] = {}  # filepath -> LogFile
         self.silence_triggered: bool = False
         self.silence_threshold: int = SILENCE_THRESHOLD
@@ -500,7 +503,7 @@ class LogMonitor(QObject):
         return ""
 
     def _check_silence(self) -> None:
-        """全局静默检测 + 冷启动保护"""
+        """全局静默检测 + 冷启动保护 + 分组检测"""
         if not self.log_files:
             return
 
@@ -508,6 +511,17 @@ class LogMonitor(QObject):
             return
 
         now = time.time()
+        
+        # 检查是否启用分组检测
+        if self.config and self.config.is_silence_by_group():
+            # 分组检测模式：按组检查静默
+            self._check_silence_by_group(now)
+        else:
+            # 传统模式：检查所有勾选的角色
+            self._check_silence_traditional(now)
+
+    def _check_silence_traditional(self, now: float) -> None:
+        """传统静默检测：检查所有勾选的角色"""
         all_silent = True
         silent_chars: List[str] = []
 
@@ -526,3 +540,58 @@ class LogMonitor(QObject):
         if all_silent and silent_chars and not self.silence_triggered:
             self.silence_triggered = True
             self.all_silent.emit()
+
+    def _check_silence_by_group(self, now: float) -> None:
+        """分组静默检测：按组检查，任意组全部静默即触发"""
+        if not self.config:
+            return
+            
+        # 获取所有角色分组
+        char_groups = self.config.get_char_groups()
+        if not char_groups:
+            # 没有分组配置，回退到传统模式
+            self._check_silence_traditional(now)
+            return
+        
+        # 按组统计静默情况
+        group_status: Dict[str, Dict[str, any]] = {}
+        
+        for lf in self.log_files.values():
+            # 只检查勾选的角色
+            if self.checked_chars and lf.char_name not in self.checked_chars:
+                continue
+                
+            # 获取角色所在组
+            group_name = char_groups.get(lf.char_name)
+            if not group_name:
+                # 没有分组的角色，归入"未分组"
+                group_name = "未分组"
+            
+            if group_name not in group_status:
+                group_status[group_name] = {
+                    'chars': [],
+                    'active_count': 0,
+                    'silent_chars': []
+                }
+            
+            group_status[group_name]['chars'].append(lf.char_name)
+            time_since_activity = now - lf.last_activity
+            
+            if time_since_activity <= self.silence_threshold:
+                group_status[group_name]['active_count'] += 1
+            else:
+                group_status[group_name]['silent_chars'].append(lf.char_name)
+        
+        # 检查是否有任意组全部静默
+        for group_name, status in group_status.items():
+            if status['chars'] and status['active_count'] == 0:
+                # 该组所有角色都静默了
+                if status['silent_chars'] and not self.silence_triggered:
+                    logger.info(f"[Silence] 组 '{group_name}' 全部静默，触发警报")
+                    self.silence_triggered = True
+                    self.all_silent.emit()
+                    return
+        
+        # 也检查未勾选角色但不在分组里的情况（回退）
+        if not group_status and not self.silence_triggered:
+            self._check_silence_traditional(now)
