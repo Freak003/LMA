@@ -120,11 +120,11 @@ class MainWindow(QMainWindow):
         group_control_row = QHBoxLayout()
         
         # 分组下拉框
-        from PyQt5.QtWidgets import QComboBox
         self.group_combo = QComboBox()
         self.group_combo.setEditable(True)
         self.group_combo.setPlaceholderText("选择或输入分组")
         self.group_combo.setMinimumWidth(150)
+        self.group_combo.currentTextChanged.connect(self._on_group_changed)
         group_control_row.addWidget(QLabel("分组:"))
         group_control_row.addWidget(self.group_combo)
         
@@ -132,6 +132,11 @@ class MainWindow(QMainWindow):
         self.set_group_btn = QPushButton("设置分组")
         self.set_group_btn.clicked.connect(self._set_char_group)
         group_control_row.addWidget(self.set_group_btn)
+        
+        # 清除所有分组按钮
+        self.clear_groups_btn = QPushButton("清除所有分组")
+        self.clear_groups_btn.clicked.connect(self._clear_all_groups)
+        group_control_row.addWidget(self.clear_groups_btn)
         
         # 按组静默开关
         self.chk_silence_by_group = QCheckBox("按组静默")
@@ -575,6 +580,55 @@ class MainWindow(QMainWindow):
         # 恢复之前的选择（如果有）
         if current_text and current_text in groups:
             self.group_combo.setCurrentText(current_text)
+    
+    def _on_group_changed(self, group_name: str) -> None:
+        """分组下拉框变化时，自动勾选该分组的角色"""
+        if not group_name:
+            # 清空选择
+            for cb in self._char_checks.values():
+                cb.setChecked(False)
+            return
+        
+        # 获取该分组下的所有角色
+        group_chars = self.config.get_chars_in_group(group_name)
+        
+        # 更新复选框勾选状态
+        for char_name, cb in self._char_checks.items():
+            if char_name in group_chars:
+                cb.setChecked(True)
+            else:
+                cb.setChecked(False)
+        
+        logger.debug(f"[Group] 切换到分组 '{group_name}'，勾选角色：{group_chars}")
+    
+    def _clear_all_groups(self) -> None:
+        """清除所有分组配置"""
+        # 获取所有有分组的角色
+        char_groups = self.config.get_char_groups()
+        if not char_groups:
+            self.statusBar().showMessage("当前没有分组配置")
+            return
+        
+        # 清除所有角色的分组
+        for char_name in list(char_groups.keys()):
+            self.config.remove_char_group(char_name)
+        
+        # 更新所有复选框显示（移除分组标签）
+        for char_name in self._char_checks:
+            self._update_char_group_display(char_name)
+        
+        # 更新分组下拉框
+        self._update_group_combo()
+        
+        # 清空复选框选择
+        for cb in self._char_checks.values():
+            cb.setChecked(False)
+        
+        # 显示提示
+        count = len(char_groups)
+        self.statusBar().showMessage(f"已清除 {count} 个角色的分组")
+        self._save_timer.start()
+        logger.info(f"[Group] 清除所有分组，共 {count} 个角色")
 
     def _set_char_group(self) -> None:
         """为选中的角色设置分组"""
