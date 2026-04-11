@@ -559,10 +559,15 @@ class MainWindow(QMainWindow):
             value: 音量值 (0-100)
         """
         volume = value / 100.0
+        # 更新配置
         self.config.set_audio_volume(volume)
+        # 更新 pygame 实际音量
+        from alert_manager import set_audio_volume
+        set_audio_volume(volume)
+        # 更新 UI 显示
         self.volume_value_label.setText(f"{value}%")
         self._save_timer.start()
-        logger.debug(f"[Volume] 音量设置为：{volume}")
+        logger.info(f"[Volume] 音量设置为：{volume} ({value}%)")
 
     # ================================================================
     #  角色分组
