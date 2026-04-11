@@ -284,13 +284,17 @@ class AlertManager(QObject):
         corp = match.group(2).strip()
         ship = match.group(3).strip()
 
+        logger.debug(f"[PVP] 检测到玩家攻击: {attacker} [{corp}] ({ship})")
+
         # 排除 NPC（军团标签为空或匹配 NPC 模式）
         if not corp or not attacker:
+            logger.debug(f"[PVP] 排除：军团或攻击者为空")
             return False
 
         # 使用常量中的 NPC 军团关键词排除
         for npc_keyword in NPC_CORP_KEYWORDS:
             if npc_keyword.lower() in corp.lower():
+                logger.debug(f"[PVP] 排除：NPC 军团 {corp}")
                 return False
 
         # 间隔重置 CD：每次命中都刷新计时
@@ -301,12 +305,15 @@ class AlertManager(QObject):
             self._cooldowns['pvp'] = now
             # 持续战斗中也延长静默宽限期
             self._last_alert_time = now
+            logger.debug(f"[PVP] 冷却中，已等待 {elapsed:.1f} 秒，剩余 {self._cd_durations['pvp'] - elapsed:.1f} 秒")
             return False
 
         self._cooldowns['pvp'] = now
         self._last_alert_time = now
 
+        logger.info(f"[PVP] 触发警报: {attacker} [{corp}] ({ship})")
         audio_path = self.config.resolve_audio('audio_pvp')
+        logger.info(f"[PVP] 播放音频: {audio_path}")
         play_audio_file(audio_path, force_stop=True)  # 抢占
 
         msg = f"玩家 {attacker} [{corp}]({ship}) 正在攻击！"
@@ -326,9 +333,13 @@ class AlertManager(QObject):
         """
         for prefix in self.config.boss_prefixes:
             if prefix and prefix in text:
+                logger.debug(f"[BOSS] 检测到 BOSS: {prefix}")
                 if not self._check_cd('boss'):
+                    logger.debug(f"[BOSS] 冷却中")
                     return False
+                logger.info(f"[BOSS] 触发警报: {text[:80]}")
                 audio_path = self.config.resolve_audio('audio_boss')
+                logger.info(f"[BOSS] 播放音频: {audio_path}")
                 play_audio_file(audio_path)
                 self._last_alert_time = time.time()
                 msg = f"BOSS 出现：{text[:80]}"
@@ -358,9 +369,13 @@ class AlertManager(QObject):
         # 使用常量中的无畏舰关键词
         for kw in DREADNOUGHT_KEYWORDS:
             if kw.lower() in text.lower():
+                logger.debug(f"[Dread] 检测到无畏舰: {kw}")
                 if not self._check_cd('dread'):
+                    logger.debug(f"[Dread] 冷却中")
                     return False
+                logger.info(f"[Dread] 触发警报: {text[:80]}")
                 audio_path = self.config.resolve_audio('audio_dread')
+                logger.info(f"[Dread] 播放音频: {audio_path}")
                 play_audio_file(audio_path)
                 self._last_alert_time = time.time()
                 msg = f"无畏舰出现：{text[:80]}"
