@@ -589,9 +589,15 @@ class LogMonitor(QObject):
                 if status['silent_chars'] and not self.silence_triggered:
                     logger.info(f"[Silence] 组 '{group_name}' 全部静默，触发警报")
                     self.silence_triggered = True
+                    # 重置静默触发状态，允许下次触发
+                    QTimer.singleShot(1000, self._reset_silence_trigger)
                     self.all_silent.emit()
                     return
         
         # 也检查未勾选角色但不在分组里的情况（回退）
         if not group_status and not self.silence_triggered:
             self._check_silence_traditional(now)
+    
+    def _reset_silence_trigger(self) -> None:
+        """重置静默触发状态，允许下次静默检测触发"""
+        self.silence_triggered = False

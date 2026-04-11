@@ -249,11 +249,15 @@ class AlertManager(QObject):
             return
 
         # 宽限期检查：最近警报后 120 秒内不触发静默
-        if time.time() - self._last_alert_time < self._silence_grace_period:
+        now = time.time()
+        if now - self._last_alert_time < self._silence_grace_period:
+            logger.debug(f"[Silence] 宽期内，跳过静默警报（距离上次警报 {now - self._last_alert_time:.1f} 秒）")
             return
             
         audio_path = self.config.resolve_audio('audio_silence')
+        logger.info(f"[Silence] 播放静默警报音频：{audio_path}")
         play_audio_file(audio_path)
+        self._last_alert_time = now  # 更新最后警报时间
         self.alert_triggered.emit('silence', '', '超过 30 秒未检测到新的战斗日志')
 
     # ---------- 各类检测 ----------
