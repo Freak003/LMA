@@ -546,56 +546,77 @@ class LogMonitor(QObject):
         if not self.config:
             return
             
-        # 获取所有角色分组
+        # 获取所有角色分组配置
         char_groups = self.config.get_char_groups()
         if not char_groups:
             # 没有分组配置，回退到传统模式
             self._check_silence_traditional(now)
             return
         
+        # 构建分组 -> 角色列表的映射
+        group_to_chars: Dict[str, List[str]] = {}
+        for char_name, group_name in char_groups.items():
+            if group_name not in group_to_chars:
+                group_to_chars[group_name] = []
+            group_to_chars[group_name].append(char_name)
+        
+        logger.debug(f"[Silence] 分组配置：{group_to_chars}")
+        
         # 按组统计静默情况
-        group_status: Dict[str, Dict[str, any]] = {}
-        
-        for lf in self.log_files.values():
-            # 只检查勾选的角色
-            if self.checked_chars and lf.char_name not in self.checked_chars:
-                continue
+        for group_name, group_chars in group_to_chars.items():
+            # 只统计已检测到且勾选的角色
+            active_count = 0
+            silent_count = 0
+            has_silent_over_threshold = False
+            
+            for char_name in group_chars:
+                # 检查是否勾选
+                if self.checked_chars and char_name not in self.checked_chars:
+                    continue
                 
-            # 获取角色所在组
-            group_name = char_groups.get(lf.char_name)
-            if not group_name:
-                # 没有分组的角色，归入"未分组"
-                group_name = "未分组"
+                # 查找该角色对应的日志文件
+                char_log_file = None
+                for lf in self.log_files.values():
+                    if lf.char_name == char_name:
+                        char_log_file = lf
+                        break
+                
+                if char_log_file is None:
+                    # 该角色的日志文件还未被检测到，跳过
+                    logger.debug(f"[Silence] 角色 '{char_name}' 的日志文件未找到")
+                    continue
+                
+                # 检查是否静默
+                time_since_activity = now - char_log_file.last_activity
+                if time_since_activity <= self.silence_threshold:
+                    active_count += 1
+                    logger.debug(f"[Silence] 角色 '{char_name}' 活跃（{time_since_activity:.1f}秒前）")
+                else:
+                    silent_count += 1
+                    has_silent_over_threshold = True
+                    logger.debug(f"[Silence] 角色 '{char_name}' 已静默（{time_since_activity:.1f}秒前）")
             
-            if group_name not in group_status:
-                group_status[group_name] = {
-                    'chars': [],
-                    'active_count': 0,
-                    'silent_chars': []
-                }
-            
-            group_status[group_name]['chars'].append(lf.char_name)
-            time_since_activity = now - lf.last_activity
-            
-            if time_since_activity <= self.silence_threshold:
-                group_status[group_name]['active_count'] += 1
-            else:
-                group_status[group_name]['silent_chars'].append(lf.char_name)
-        
-        # 检查是否有任意组全部静默
-        for group_name, status in group_status.items():
-            if status['chars'] and status['active_count'] == 0:
-                # 该组所有角色都静默了
-                if status['silent_chars'] and not self.silence_triggered:
-                    logger.info(f"[Silence] 组 '{group_name}' 全部静默，触发警报")
-                    self.silence_triggered = True
-                    # 重置静默触发状态，允许下次触发
-                    QTimer.singleShot(1000, self._reset_silence_trigger)
-                    self.all_silent.emit()
-                    return
+            # 检查该组是否全部静默
+            # 条件：1. 所有已检测到的角色都静默了（active_count == 0）
+            #      2. 至少有一个角色静默超过阈值
+            #      3. 还未触发过静默
+            if active_count == 0 and has_silent_over_threshold and not self.silence_triggered:
+                logger.info(f"[Silence] 组 '{group_name}' 全部静默（活跃: {active_count}, 静默: {silent_count}），触发警报")
+                self.silence_triggered = True
+                # 重置静默触发状态，允许下次触发
+                QTimer.singleShot(1000, self._reset_silence_trigger)
+                self.all_silent.emit()
+                return
         
         # 也检查未勾选角色但不在分组里的情况（回退）
-        if not group_status and not self.silence_triggered:
+        chars_in_groups = set(char_groups.keys())
+        has_unchecked_in_log_files = False
+        for lf in self.log_files.values():
+            if lf.char_name not in chars_in_groups:
+                has_unchecked_in_log_files = True
+                break
+        
+        if has_unchecked_in_log_files and not self.silence_triggered:
             self._check_silence_traditional(now)
     
     def _reset_silence_trigger(self) -> None:
