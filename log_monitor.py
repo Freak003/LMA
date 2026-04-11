@@ -522,23 +522,32 @@ class LogMonitor(QObject):
 
     def _check_silence_traditional(self, now: float) -> None:
         """传统静默检测：检查所有勾选的角色"""
-        all_silent = True
-        silent_chars: List[str] = []
-
-        # 检查所有勾选的角色是否都静默了
+        active_count = 0
+        silent_count = 0
+        
+        # 检查所有勾选的角色
         for lf in self.log_files.values():
-            if not self.checked_chars or lf.char_name in self.checked_chars:
-                time_since_activity = now - lf.last_activity
-                if time_since_activity <= self.silence_threshold:
-                    # 至少有一个勾选的角色还在活动
-                    all_silent = False
-                    break
-                else:
-                    silent_chars.append(lf.char_name)
-
-        # 如果所有勾选的角色都超过了静默阈值，且还没有触发过静默
-        if all_silent and silent_chars and not self.silence_triggered:
+            # 如果设置了勾选角色，只检查已勾选的；否则检查所有
+            if self.checked_chars and lf.char_name not in self.checked_chars:
+                continue
+            
+            time_since_activity = now - lf.last_activity
+            if time_since_activity <= self.silence_threshold:
+                active_count += 1
+                logger.debug(f"[Silence] 角色 '{lf.char_name}' 活跃（{time_since_activity:.1f}秒前）")
+            else:
+                silent_count += 1
+                logger.debug(f"[Silence] 角色 '{lf.char_name}' 已静默（{time_since_activity:.1f}秒前）")
+        
+        # 触发条件：所有已检测到的勾选角色都静默超过阈值
+        # 条件：1. 没有活跃角色（active_count == 0）
+        #      2. 至少有一个静默角色（silent_count > 0）
+        #      3. 还未触发过静默
+        if active_count == 0 and silent_count > 0 and not self.silence_triggered:
+            logger.info(f"[Silence] 所有角色静默（活跃: {active_count}, 静默: {silent_count}），触发警报")
             self.silence_triggered = True
+            # 重置静默触发状态，允许下次触发
+            QTimer.singleShot(1000, self._reset_silence_trigger)
             self.all_silent.emit()
 
     def _check_silence_by_group(self, now: float) -> None:
