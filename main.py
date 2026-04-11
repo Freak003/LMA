@@ -38,8 +38,8 @@ from widgets import FlowLayout
 from constants import DEBOUNCE_SAVE_INTERVAL, MAX_LOG_LINES
 from logger_config import init_logging, get_logger
 
-# 初始化日志系统
-init_logging(log_to_file=False)
+# 初始化日志系统（启用文件记录）
+init_logging(log_to_file=True)
 logger = get_logger('EVE-LMA')
 
 
@@ -338,10 +338,29 @@ class MainWindow(QMainWindow):
         for _, char_name in file_list:
             if char_name and char_name != "Unknown" and char_name not in self._char_checks:
                 cb = QCheckBox(char_name)
-                cb.setChecked(True)
+                # 新角色默认不勾选，根据当前分组设置决定
+                cb.setChecked(False)
                 cb.toggled.connect(self._update_checked_chars)
+                # 添加右键菜单显示分组信息
+                cb.setContextMenuPolicy(Qt.CustomContextMenu)
+                cb.customContextMenuRequested.connect(
+                    lambda pos, name=char_name: self._show_char_group_menu(name, pos)
+                )
                 self._char_checks[char_name] = cb
                 self.char_layout.addWidget(cb)
+                
+                # 如果角色已有分组，更新 UI 显示
+                self._update_char_group_display(char_name)
+                
+                # 如果当前选中了分组，自动勾选该分组的角色
+                current_group = self.group_combo.currentText()
+                if current_group:
+                    group_chars = self.config.get_chars_in_group(current_group)
+                    if char_name in group_chars:
+                        cb.setChecked(True)
+                        logger.info(f"[Group] 新角色 '{char_name}' 属于分组 '{current_group}'，自动勾选")
+                else:
+                    logger.info(f"[Monitor] 发现新角色 '{char_name}'，默认未勾选")
 
         if self._char_checks:
             self.char_placeholder.hide()
@@ -357,7 +376,8 @@ class MainWindow(QMainWindow):
         if char_name in self._char_checks:
             return
         cb = QCheckBox(char_name)
-        cb.setChecked(True)
+        # 新角色默认不勾选
+        cb.setChecked(False)
         cb.toggled.connect(self._update_checked_chars)
         # 添加右键菜单显示分组信息
         cb.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -371,6 +391,14 @@ class MainWindow(QMainWindow):
         
         # 如果角色已有分组，更新 UI
         self._update_char_group_display(char_name)
+        
+        # 如果当前选中了分组，自动勾选该分组的角色
+        current_group = self.group_combo.currentText()
+        if current_group:
+            group_chars = self.config.get_chars_in_group(current_group)
+            if char_name in group_chars:
+                cb.setChecked(True)
+                logger.info(f"[Group] 新角色 '{char_name}' 属于分组 '{current_group}'，自动勾选")
 
     def _show_char_group_menu(self, char_name: str, pos) -> None:
         """显示角色分组右键菜单"""
